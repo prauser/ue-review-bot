@@ -114,7 +114,7 @@ categories:
         tier: 1
         severity: error
         auto_fixable: false
-        pattern: "#\\s*pragma\\s+optimize\\s*\\(\\s*[\"']?off[\"']?"
+        pattern: "#\\\\s*pragma\\\\s+optimize\\\\s*\\\\([^)]*\\\\boff\\\\b"
         rationale: "절대 놓치면 안 됨, 게이트키퍼"
 
       - id: hard_asset_path
@@ -125,7 +125,7 @@ categories:
         tier: 1
         severity: warning
         auto_fixable: false
-        pattern: 'TEXT\\s*\\(\\s*["\']\\s*/Game/'
+        pattern: "TEXT\\\\s*\\\\(\\\\s*[\"']\\\\s*/Game/"
         rationale: "regex가 확실, 빈번"
 
       - id: macro_no_semicolon
