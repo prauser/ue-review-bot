@@ -114,41 +114,43 @@ categories:
         tier: 1
         severity: error
         auto_fixable: false
-        pattern: "#\\\\s*pragma\\\\s+optimize\\\\s*\\\\([^)]*\\\\boff\\\\b"
+        pattern: "#\\s*pragma\\s+optimize\\s*\\([^)]*\\boff\\b"
         rationale: "절대 놓치면 안 됨, 게이트키퍼"
 
       - id: hard_asset_path
         summary: "하드코딩된 에셋 경로 금지"
         description: |
-          TEXT("/Game/...") 형태의 하드코딩된 에셋 경로는 금지합니다.
+          TEXT("/Game/...") 또는 TEXT("/Engine/...") 형태의 하드코딩된 에셋 경로는 금지합니다.
           DataTable, Config, SoftObjectPtr 등을 사용하세요.
         tier: 1
         severity: warning
         auto_fixable: false
-        pattern: "TEXT\\\\s*\\\\(\\\\s*[\"']\\\\s*/Game/"
-        rationale: "regex가 확실, 빈번"
+        pattern: "TEXT\\s*\\(\\s*[\"']\\s*/(Game|Engine)/"
+        rationale: "regex가 확실, 빈번 (Game/Engine 모두 감지)"
 
       - id: macro_no_semicolon
         summary: "UE 매크로 뒤 세미콜론 제거"
         description: |
           UFUNCTION, UPROPERTY, GENERATED_BODY 등 UE 매크로 뒤에는 세미콜론을 붙이지 마세요.
+          예: UPROPERTY(meta=(AllowPrivateAccess="true"));
         tier: 1
         severity: warning
         auto_fixable: true
-        pattern: "(UFUNCTION|UPROPERTY|UCLASS|USTRUCT|UENUM|UMETA|GENERATED_BODY|GENERATED_UCLASS_BODY)\\s*\\([^)]*\\)\\s*;"
-        rationale: "auto-fix suggestion 생성 목적"
+        pattern: "(UFUNCTION|UPROPERTY|UCLASS|USTRUCT|UENUM|UMETA|GENERATED_BODY|GENERATED_UCLASS_BODY)\\s*\\((?:[^()]|\\([^()]*\\))*\\)\\s*;"
+        rationale: "auto-fix suggestion 생성 목적, 중첩 괄호 지원 (meta=(...) 등)"
 
       # --- Stage 1 (Regex) — check() 부작용 1차 필터 ---
       - id: check_side_effect_suspicious
-        summary: "check() 매크로에 의심스러운 부작용 패턴 감지"
+        summary: "check()/checkf() 매크로에 의심스러운 부작용 패턴 감지"
         description: |
-          check() 내부에 증감 연산자(++/--), 복합 대입(+=/-=), 단순 대입(=) 등
-          부작용 가능성이 있는 패턴을 감지합니다. Stage 3(LLM)에서 최종 검증합니다.
+          check(), checkf() 내부에 증감 연산자(++/--), 복합 대입(+=/-=), 단순 대입(=),
+          함수 호출 등 부작용 가능성이 있는 패턴을 감지합니다. Stage 3(LLM)에서 최종 검증합니다.
+          예: check(++Index < Max), checkf(ProcessItem(Item), TEXT("Failed"))
         tier: 1
         severity: warning
         auto_fixable: false
-        pattern: "check\\s*\\([^)]*(?:\\+\\+|--|[+\\-*/%&|^]=|<<=|>>=|(?<![=!<>])=(?!=))[^)]*\\)"
-        rationale: "1차 필터로 의심 케이스 포착, LLM 호출 부하 감소 (화이트리스트 함수 호출은 별도 처리 필요)"
+        pattern: "(check|checkf|checkCode|checkSlow|checkSlowish|verify|verifyf)\\s*\\([^)]*(?:\\+\\+|--|[+\\-*/%&|^]=|<<=|>>=|(?<![=!<>])=(?!=)|\\w+\\s*\\()[^)]*"
+        rationale: "1차 필터로 의심 케이스 포착 (증감/대입/함수호출), LLM 호출 부하 감소. checkf, verify 등 변형 포함"
         tags: ["requires_llm_verification"]
         whitelist_file: "configs/safe_functions.yml"
 
@@ -178,15 +180,16 @@ categories:
         rationale: "PVS-Studio V640이 매크로 확장 후 로직 불일치 감지"
 
       - id: sync_load_runtime
-        summary: "런타임에 동기 로딩(LoadObject, StaticLoadObject) 사용 금지"
+        summary: "런타임에 동기 로딩(LoadObject, LoadSynchronous 등) 사용 금지"
         description: |
           런타임에 동기 로딩은 프레임 드랍을 유발합니다.
-          AsyncLoad, SoftObjectPtr, StreamableManager를 사용하세요.
+          LoadObject, StaticLoadObject, LoadSynchronous (SoftObjectPtr) 등을 피하세요.
+          AsyncLoad, SoftObjectPtr 비동기 로딩, StreamableManager를 사용하세요.
         tier: 1
         severity: error
         auto_fixable: false
-        pattern: "\\b(LoadObject|StaticLoadObject|LoadClass|StaticLoadClass)\\s*[<(]"
-        rationale: "빈번하고 명확 (LLM이 로딩/런타임 문맥 보강)"
+        pattern: "\\b(LoadObject|StaticLoadObject|LoadClass|StaticLoadClass|LoadSynchronous)\\s*[<(]"
+        rationale: "빈번하고 명확 (LLM이 로딩/런타임 문맥 보강). LoadSynchronous 포함"
 
       # --- Stage 3 (LLM) — 이관 항목 ---
       - id: sandwich_inequality
