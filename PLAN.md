@@ -79,7 +79,11 @@ PR 생성 → yml 트리거 → checkout (게임+봇) → Gate
 
 - **파일 필터** (항상): ThirdParty, 자동생성, 바이너리 → 분석 대상에서 제외 (규모 판정 무관)
 - **규모 판정**: 필터 후 reviewable 파일 50개 초과 OR 대규모 라벨 → 대규모 PR
-- 대규모: 자동 시 Stage 1만 / `/review` 수동 시 Stage 1+2 / Stage 3은 항상 차단
+- **대규모 PR 실행 규칙**:
+  - 자동 리뷰 (PR 생성/업데이트): Stage 1 + Stage 2 (사용 가능 시)
+  - 수동 리뷰 (`/review` 명령): Stage 1 + Stage 2 (사용 가능 시)
+  - **Stage 3 (LLM)은 항상 차단** (비용/토큰 제한)
+- **일반 PR**: Stage 1 + Stage 2 (사용 가능 시) + Stage 3
 
 ---
 

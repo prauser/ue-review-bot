@@ -90,14 +90,24 @@ large_pr_labels:
 #     → Large PR
 #
 # Automatic Review (PR created/updated):
-#   Normal PR:  Stage 1 + Stage 2 (if compile_commands.json) + Stage 3
-#   Large PR:   Stage 1 ONLY
+#   Normal PR:  Stage 1 + Stage 2 (if available) + Stage 3
+#   Large PR:   Stage 1 + Stage 2 (if available), NO Stage 3
 #
 # Manual Review (/review command):
-#   Normal PR:  Stage 1 + Stage 2 (if compile_commands.json) + Stage 3
-#   Large PR:   Stage 1 + Stage 2 (if compile_commands.json), NO Stage 3
+#   Normal PR:  Stage 1 + Stage 2 (if available) + Stage 3
+#   Large PR:   Stage 1 + Stage 2 (if available), NO Stage 3
 #
-# Stage 3 (LLM) is ALWAYS blocked for large PRs to prevent:
-#   - Excessive API costs
-#   - Token limit issues
+# Rationale:
+#   - Stage 1 (Regex): Fast, low cost → Always run
+#   - Stage 2 (PVS-Studio): Fast, medium cost, high accuracy → Always run when available
+#   - Stage 3 (LLM): Slow, high cost, token limits → Block for large PRs
+#
+# Stage 2 Availability:
+#   - Requires: compile_commands.json (UE5 project compilation database)
+#   - Checks: Tier 2 rules (override_keyword, virtual_destructor, unnecessary_copy, unbraced_shipping_macro)
+#   - Cost: ~5 min build time + PVS-Studio license
+#
+# Stage 3 is BLOCKED for large PRs to prevent:
+#   - Excessive API costs (LLM tokens)
+#   - Context window overflow (100+ files)
 #   - Incomplete/truncated reviews
