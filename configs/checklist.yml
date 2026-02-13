@@ -141,24 +141,25 @@ categories:
       - id: check_side_effect
         summary: "check() 매크로 내부에 부작용 있는 코드 금지"
         description: |
-          check()/verify() 내부의 코드는 Shipping 빌드에서 제거될 수 있습니다.
-          부작용이 있는 코드(함수 호출, 증감 연산 등)는 사용하지 마세요.
-        tier: 1
+          check() 내부의 코드는 Shipping 빌드에서 제거됩니다.
+          부작용이 있는 코드(함수 호출, 증감 연산 등)는 verify()를 사용하세요.
+        tier: 3
         severity: error
         auto_fixable: false
-        pattern: "\\b(check|checkSlow|checkf|checkNoEntry|checkNoReentry|checkNoRecursion)\\s*\\("
-        rationale: "shipping 빌드 이슈, 게이트키퍼"
+        rationale: "부작용 여부는 시맨틱 분석 필요 (LLM). UE 공식 권장: check()는 부작용 X, verify()는 부작용 O"
+        suggestion: "check()를 verify()로 변경하거나 로직을 분리하세요"
 
       - id: unbraced_shipping_macro
-        summary: "WITH_EDITOR, IS_PROGRAM 등 조건부 컴파일 매크로는 중괄호로 감싸기"
+        summary: "중괄호 없는 if/for문에서 shipping 매크로 사용 금지"
         description: |
-          #if WITH_EDITOR 등의 조건부 컴파일 블록은 반드시 중괄호로 감싸세요.
-          버그 예방을 위해 필수입니다.
-        tier: 1
+          if, for 문에 중괄호가 없는 상태에서 check(), UE_LOG(), ensure() 등
+          Shipping 빌드에서 사라지는 매크로를 사용하면 의도치 않은 동작이 발생합니다.
+          반드시 중괄호로 감싸세요.
+        tier: 2
         severity: error
         auto_fixable: false
-        pattern: "#\\s*if\\s+(WITH_EDITOR|WITH_EDITORONLY_DATA|IS_PROGRAM|!UE_BUILD_SHIPPING)"
-        rationale: "구조적 버그 방지"
+        pvs_check: "V640"
+        rationale: "PVS-Studio V640이 매크로 확장 후 로직 불일치 감지"
 
       - id: sync_load_runtime
         summary: "런타임에 동기 로딩(LoadObject, StaticLoadObject) 사용 금지"
@@ -168,7 +169,7 @@ categories:
         tier: 1
         severity: error
         auto_fixable: false
-        pattern: "\\b(LoadObject|StaticLoadObject|LoadClass|StaticLoadClass)\\s*<"
+        pattern: "\\b(LoadObject|StaticLoadObject|LoadClass|StaticLoadClass)\\s*[<(]"
         rationale: "빈번하고 명확 (LLM이 로딩/런타임 문맥 보강)"
 
       # --- Stage 3 (LLM) — 이관 항목 ---
