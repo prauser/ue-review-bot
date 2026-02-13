@@ -133,11 +133,12 @@ categories:
         description: |
           UE_LOG, check, ensure 등 런타임 매크로 뒤에는 세미콜론이 필요합니다.
           예: check(Actor != nullptr); (세미콜론 필수)
+          예: UE_LOG(LogTemp, Log, TEXT("Message")); (중첩 괄호도 지원)
         tier: 1
         severity: warning
         auto_fixable: true
-        pattern: "(UE_LOG|check|checkf|ensure|ensureMsgf|verify|verifyf)\\s*\\([^;]*\\)\\s*(?!;)"
-        rationale: "런타임 매크로는 구문이므로 세미콜론 필수. Stage 1 스펙 준수"
+        pattern: "(UE_LOG|check|checkf|ensure|ensureMsgf|verify|verifyf)\\s*\\((?:[^()]|\\([^()]*\\))*\\)\\s*(?!;)"
+        rationale: "런타임 매크로는 구문이므로 세미콜론 필수. Stage 1 스펙 준수. 중첩 괄호 지원 (TEXT(...), 함수 호출 등)"
 
       - id: declaration_macro_semicolon
         summary: "선언 매크로 뒤 불필요한 세미콜론 제거"
