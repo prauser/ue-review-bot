@@ -129,15 +129,26 @@ categories:
         rationale: "regex가 확실, 빈번 (Game/Engine 모두 감지)"
 
       - id: macro_no_semicolon
-        summary: "UE 매크로 뒤 세미콜론 제거"
+        summary: "런타임 매크로 뒤 세미콜론 누락"
         description: |
-          UFUNCTION, UPROPERTY, GENERATED_BODY 등 UE 매크로 뒤에는 세미콜론을 붙이지 마세요.
-          예: UPROPERTY(meta=(AllowPrivateAccess="true"));
+          UE_LOG, check, ensure 등 런타임 매크로 뒤에는 세미콜론이 필요합니다.
+          예: check(Actor != nullptr); (세미콜론 필수)
+        tier: 1
+        severity: warning
+        auto_fixable: true
+        pattern: "(UE_LOG|check|checkf|ensure|ensureMsgf|verify|verifyf)\\s*\\([^;]*\\)\\s*(?!;)"
+        rationale: "런타임 매크로는 구문이므로 세미콜론 필수. Stage 1 스펙 준수"
+
+      - id: declaration_macro_semicolon
+        summary: "선언 매크로 뒤 불필요한 세미콜론 제거"
+        description: |
+          UFUNCTION, UPROPERTY, GENERATED_BODY 등 선언 매크로 뒤에는 세미콜론을 붙이지 마세요.
+          예: UPROPERTY(meta=(AllowPrivateAccess="true")); (세미콜론 불필요)
         tier: 1
         severity: warning
         auto_fixable: true
         pattern: "(UFUNCTION|UPROPERTY|UCLASS|USTRUCT|UENUM|UMETA|GENERATED_BODY|GENERATED_UCLASS_BODY)\\s*\\((?:[^()]|\\([^()]*\\))*\\)\\s*;"
-        rationale: "auto-fix suggestion 생성 목적, 중첩 괄호 지원 (meta=(...) 등)"
+        rationale: "선언 매크로는 세미콜론 불필요. 중첩 괄호 지원 (meta=(...) 등)"
 
       # --- Stage 1 (Regex) — check() 부작용 1차 필터 ---
       - id: check_side_effect_suspicious
@@ -146,11 +157,13 @@ categories:
           check(), checkf() 내부에 증감 연산자(++/--), 복합 대입(+=/-=), 단순 대입(=),
           함수 호출 등 부작용 가능성이 있는 패턴을 감지합니다. Stage 3(LLM)에서 최종 검증합니다.
           예: check(++Index < Max), checkf(ProcessItem(Item), TEXT("Failed"))
+
+          참고: verify()/verifyf()는 제외 (부작용이 있어도 괜찮음, 모든 빌드에서 실행)
         tier: 1
         severity: warning
         auto_fixable: false
-        pattern: "(check|checkf|checkCode|checkSlow|checkSlowish|verify|verifyf)\\s*\\([^)]*(?:\\+\\+|--|[+\\-*/%&|^]=|<<=|>>=|(?<![=!<>])=(?!=)|\\w+\\s*\\()[^)]*"
-        rationale: "1차 필터로 의심 케이스 포착 (증감/대입/함수호출), LLM 호출 부하 감소. checkf, verify 등 변형 포함"
+        pattern: "(check|checkf|checkCode|checkSlow|checkSlowish)\\s*\\([^)]*(?:\\+\\+|--|[+\\-*/%&|^]=|<<=|>>=|(?<![=!<>])=(?!=)|\\w+\\s*\\()[^)]*"
+        rationale: "1차 필터로 의심 케이스 포착 (증감/대입/함수호출), LLM 호출 부하 감소. verify/verifyf는 제외 (정상 사용)"
         tags: ["requires_llm_verification"]
         whitelist_file: "configs/safe_functions.yml"
 
