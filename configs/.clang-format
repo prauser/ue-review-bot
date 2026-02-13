@@ -1,0 +1,89 @@
+# UE5 Epic Coding Standard — clang-format configuration
+# Based on Allman (ANSI) style with Unreal Engine specific settings
+# Reference: https://docs.unrealengine.com/en-US/epic-cplusplus-coding-standard-for-unreal-engine/
+
+---
+Language: Cpp
+BasedOnStyle: LLVM
+
+# === Indentation ===
+UseTab: Always
+TabWidth: 4
+IndentWidth: 4
+AccessModifierOffset: -4
+NamespaceIndentation: All
+IndentCaseLabels: false
+IndentPPDirectives: AfterHash
+
+# === Brace Style ===
+BreakBeforeBraces: Allman
+
+# === Line Length ===
+ColumnLimit: 120
+
+# === Include Sorting ===
+# CRITICAL: Do not sort includes - UE relies on specific header order for PCH
+SortIncludes: false
+SortUsingDeclarations: false
+
+# === Pointer/Reference Alignment ===
+# UE style: int* Ptr (pointer left-aligned)
+PointerAlignment: Left
+ReferenceAlignment: Left
+
+# === Single-line Statements ===
+AllowShortIfStatementsOnASingleLine: false
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortBlocksOnASingleLine: false
+AllowShortCaseLabelsOnASingleLine: false
+AllowShortLambdasOnASingleLine: All
+
+# === Line Breaks ===
+AlwaysBreakAfterReturnType: None
+AlwaysBreakAfterDefinitionReturnType: None
+AlwaysBreakBeforeMultilineStrings: false
+BreakBeforeBinaryOperators: None
+BreakBeforeTernaryOperators: true
+BreakConstructorInitializers: BeforeComma
+BreakInheritanceList: BeforeComma
+
+# === Spacing ===
+SpaceAfterCStyleCast: false
+SpaceAfterTemplateKeyword: true
+SpaceBeforeAssignmentOperators: true
+SpaceBeforeParens: ControlStatements
+SpaceInEmptyParentheses: false
+SpacesInAngles: false
+SpacesInCStyleCastParentheses: false
+SpacesInContainerLiterals: false
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+
+# === Comments ===
+ReflowComments: true
+SpacesBeforeTrailingComments: 1
+
+# === Other ===
+AlignAfterOpenBracket: Align
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignEscapedNewlines: Left
+AlignOperands: true
+AlignTrailingComments: true
+BinPackArguments: true
+BinPackParameters: true
+ConstructorInitializerAllOnOneLineOrOnePerLine: true
+ConstructorInitializerIndentWidth: 4
+ContinuationIndentWidth: 4
+Cpp11BracedListStyle: true
+DerivePointerAlignment: false
+KeepEmptyLinesAtTheStartOfBlocks: true
+MaxEmptyLinesToKeep: 1
+PenaltyBreakBeforeFirstCallParameter: 19
+PenaltyBreakComment: 300
+PenaltyBreakFirstLessLess: 120
+PenaltyBreakString: 1000
+PenaltyExcessCharacter: 1000000
+PenaltyReturnTypeOnItsOwnLine: 60
+Standard: c++17

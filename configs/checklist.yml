@@ -1,0 +1,340 @@
+# UE5 Code Review Checklist
+# Machine-readable format for automated code review system
+# Parsed from: CodeReviewCheckList.pdf, CodingConvention.pdf
+#
+# Tier explanation:
+#   1 = Stage 1 (regex pattern matching) — 7 critical patterns
+#   2 = Stage 2 (clang-tidy static analysis) — requires compile_commands.json
+#   3 = Stage 3 (LLM semantic review) — migrated items + original LLM tasks
+#
+# Severity: error | warning | info
+# auto_fixable: true if suggestion block can be auto-generated
+
+version: "1.0"
+categories:
+  # ============================================================================
+  # C++ Common Rules
+  # ============================================================================
+  - id: cpp_common
+    name: "C++ Common"
+    items:
+      # --- Stage 3 (LLM) ---
+      - id: auto_non_lambda
+        summary: "auto 사용 금지 (람다 변수 제외)"
+        description: "auto는 람다 변수를 제외하고 사용하지 않습니다. 명시적 타입을 사용하세요."
+        tier: 3
+        severity: warning
+        auto_fixable: false
+        rationale: "람다 변수 여부를 regex로 판단하기 어려워 LLM으로 이관"
+
+      - id: yoda_condition
+        summary: "Yoda 조건식 금지 (if (5 == x))"
+        description: "조건식에서 상수를 왼쪽에 배치하지 마세요. 자연스러운 순서(if (x == 5))를 사용하세요."
+        tier: 3
+        severity: warning
+        auto_fixable: false
+        rationale: "컨벤션 위반, 오탐 시 영향 적음"
+
+      - id: not_operator_in_if
+        summary: "if 조건에 ! 연산자 사용 자제"
+        description: "if (!bFlag) 대신 if (bFlag == false)를 사용하세요. IsValid 등 예외는 허용됩니다."
+        tier: 3
+        severity: info
+        auto_fixable: false
+        rationale: "!IsValid 등 예외 처리가 regex로 까다로움"
+
+      - id: const_ref_param
+        summary: "함수 파라미터에 const& 사용"
+        description: "Pass-by-value가 필요한 경우를 제외하고 객체 파라미터는 const&로 전달하세요."
+        tier: 3
+        severity: warning
+        auto_fixable: false
+
+      - id: smart_pointer_usage
+        summary: "스마트 포인터 올바른 사용"
+        description: |
+          - TSharedPtr: 공유 소유권
+          - TWeakPtr: 순환 참조 방지
+          - TUniquePtr: 독점 소유권
+          - UObject는 UPROPERTY로 관리 (스마트 포인터 X)
+        tier: 3
+        severity: warning
+        auto_fixable: false
+
+      - id: override_keyword
+        summary: "가상 함수 오버라이드 시 override 키워드 필수"
+        description: "부모 클래스의 가상 함수를 오버라이드할 때 override 키워드를 명시하세요."
+        tier: 2
+        severity: error
+        auto_fixable: false
+        clang_tidy_check: "modernize-use-override"
+
+      - id: virtual_destructor
+        summary: "다형성 최상위 클래스 소멸자에 virtual 필수"
+        description: "상속될 수 있는 클래스의 소멸자는 virtual로 선언하세요."
+        tier: 2
+        severity: error
+        auto_fixable: false
+        clang_tidy_check: "cppcoreguidelines-virtual-class-destructor"
+
+      - id: unnecessary_copy
+        summary: "불필요한 복사 방지"
+        description: "루프에서 const auto&를 사용하여 불필요한 복사를 방지하세요."
+        tier: 2
+        severity: warning
+        auto_fixable: false
+        clang_tidy_check: "performance-for-range-copy"
+
+      - id: deep_recursion
+        summary: "깊이 제한 없는 재귀/UObject 그래프 재귀 금지"
+        description: "스택 오버플로우를 방지하기 위해 깊이 제한 없는 재귀나 UObject 그래프 재귀는 사용하지 마세요."
+        tier: 3
+        severity: error
+        auto_fixable: false
+
+  # ============================================================================
+  # UE-Specific Rules
+  # ============================================================================
+  - id: ue_specific
+    name: "UE-Specific"
+    items:
+      # --- Stage 1 (Regex) — 7개 유지 항목 ---
+      - id: logtemp
+        summary: "LogTemp 대신 적절한 로그 카테고리 사용"
+        description: "LogTemp는 임시 디버깅용입니다. 프로덕션 코드에서는 DEFINE_LOG_CATEGORY로 정의된 로그 카테고리를 사용하세요."
+        tier: 1
+        severity: warning
+        auto_fixable: false
+        pattern: "\\bLogTemp\\b"
+        rationale: "단순 매칭, 100% 검출 보장"
+
+      - id: pragma_optimize_off
+        summary: "#pragma optimize off 금지"
+        description: "최적화 비활성화는 성능에 치명적입니다. 절대 커밋하지 마세요."
+        tier: 1
+        severity: error
+        auto_fixable: false
+        pattern: "#\\s*pragma\\s+optimize\\s*\\(\\s*[\"']?off[\"']?"
+        rationale: "절대 놓치면 안 됨, 게이트키퍼"
+
+      - id: hard_asset_path
+        summary: "하드코딩된 에셋 경로 금지"
+        description: |
+          TEXT("/Game/...") 형태의 하드코딩된 에셋 경로는 금지합니다.
+          DataTable, Config, SoftObjectPtr 등을 사용하세요.
+        tier: 1
+        severity: warning
+        auto_fixable: false
+        pattern: 'TEXT\\s*\\(\\s*["\']\\s*/Game/'
+        rationale: "regex가 확실, 빈번"
+
+      - id: macro_no_semicolon
+        summary: "UE 매크로 뒤 세미콜론 제거"
+        description: |
+          UFUNCTION, UPROPERTY, GENERATED_BODY 등 UE 매크로 뒤에는 세미콜론을 붙이지 마세요.
+        tier: 1
+        severity: warning
+        auto_fixable: true
+        pattern: "(UFUNCTION|UPROPERTY|UCLASS|USTRUCT|UENUM|UMETA|GENERATED_BODY|GENERATED_UCLASS_BODY)\\s*\\([^)]*\\)\\s*;"
+        rationale: "auto-fix suggestion 생성 목적"
+
+      - id: check_side_effect
+        summary: "check() 매크로 내부에 부작용 있는 코드 금지"
+        description: |
+          check()/verify() 내부의 코드는 Shipping 빌드에서 제거될 수 있습니다.
+          부작용이 있는 코드(함수 호출, 증감 연산 등)는 사용하지 마세요.
+        tier: 1
+        severity: error
+        auto_fixable: false
+        pattern: "\\b(check|checkSlow|checkf|checkNoEntry|checkNoReentry|checkNoRecursion)\\s*\\("
+        rationale: "shipping 빌드 이슈, 게이트키퍼"
+
+      - id: unbraced_shipping_macro
+        summary: "WITH_EDITOR, IS_PROGRAM 등 조건부 컴파일 매크로는 중괄호로 감싸기"
+        description: |
+          #if WITH_EDITOR 등의 조건부 컴파일 블록은 반드시 중괄호로 감싸세요.
+          버그 예방을 위해 필수입니다.
+        tier: 1
+        severity: error
+        auto_fixable: false
+        pattern: "#\\s*if\\s+(WITH_EDITOR|WITH_EDITORONLY_DATA|IS_PROGRAM|!UE_BUILD_SHIPPING)"
+        rationale: "구조적 버그 방지"
+
+      - id: sync_load_runtime
+        summary: "런타임에 동기 로딩(LoadObject, StaticLoadObject) 사용 금지"
+        description: |
+          런타임에 동기 로딩은 프레임 드랍을 유발합니다.
+          AsyncLoad, SoftObjectPtr, StreamableManager를 사용하세요.
+        tier: 1
+        severity: error
+        auto_fixable: false
+        pattern: "\\b(LoadObject|StaticLoadObject|LoadClass|StaticLoadClass)\\s*<"
+        rationale: "빈번하고 명확 (LLM이 로딩/런타임 문맥 보강)"
+
+      # --- Stage 3 (LLM) — 이관 항목 ---
+      - id: sandwich_inequality
+        summary: "샌드위치 부등식 금지 (a < b < c)"
+        description: "C++에서 a < b < c는 의도대로 동작하지 않습니다. (a < b) && (b < c)로 작성하세요."
+        tier: 3
+        severity: error
+        auto_fixable: false
+        rationale: "드문 패턴, regex 유지 가치 낮음"
+
+      - id: fsimpledelegate
+        summary: "FSimpleDelegate 대신 명시적 시그니처 사용"
+        description: "FSimpleDelegate는 디버깅이 어렵습니다. DECLARE_DELEGATE로 명시적 델리게이트를 선언하세요."
+        tier: 3
+        severity: warning
+        auto_fixable: false
+        rationale: "드문 패턴, LLM이 충분히 검출"
+
+      - id: loctext_no_undef
+        summary: "LOCTEXT_NAMESPACE 정의 후 #undef 누락"
+        description: "LOCTEXT_NAMESPACE를 정의한 후 파일 끝에서 #undef LOCTEXT_NAMESPACE를 추가하세요."
+        tier: 3
+        severity: warning
+        auto_fixable: false
+        rationale: "파일 단위 검사라 별도 로직 필요"
+
+      - id: constructorhelpers_outside_ctor
+        summary: "ConstructorHelpers를 생성자 외부에서 사용 금지"
+        description: "ConstructorHelpers::FObjectFinder 등은 생성자 내에서만 사용해야 합니다."
+        tier: 3
+        severity: error
+        auto_fixable: false
+        rationale: "생성자 안/밖은 AST 수준 판단"
+
+      # --- Additional items ---
+      - id: newobject_outer_check
+        summary: "NewObject<> 사용 시 Outer null 체크"
+        description: "NewObject<>의 Outer 파라미터가 nullptr일 수 있는 경우 체크하세요."
+        tier: 3
+        severity: error
+        auto_fixable: false
+
+      - id: getworld_null_check
+        summary: "GetWorld() 반환값 null 체크"
+        description: "GetWorld()는 nullptr을 반환할 수 있습니다. 사용 전 체크하세요."
+        tier: 3
+        severity: error
+        auto_fixable: false
+
+      - id: customizeduv_naming
+        summary: "CustomizedUV 명명 규칙 준수"
+        description: "커스터마이즈된 UV는 CustomizedUV로 명명하세요 (오타: CutomizedUV)."
+        tier: 3
+        severity: info
+        auto_fixable: false
+
+  # ============================================================================
+  # Multiplayer / Networking
+  # ============================================================================
+  - id: multiplayer
+    name: "Multiplayer / Networking"
+    items:
+      - id: client_rpc_authority
+        summary: "클라이언트 RPC 호출 시 권한 검증 필수"
+        description: |
+          Client RPC를 호출하기 전 서버 권한(HasAuthority)을 확인하세요.
+          클라이언트가 임의로 호출하지 못하도록 방지합니다.
+        tier: 3
+        severity: error
+        auto_fixable: false
+
+      - id: replicated_property_condition
+        summary: "Replicated 프로퍼티는 DOREPLIFETIME 등록 필수"
+        description: "Replicated로 선언된 UPROPERTY는 GetLifetimeReplicatedProps에서 등록해야 합니다."
+        tier: 3
+        severity: error
+        auto_fixable: false
+
+  # ============================================================================
+  # Blueprint Integration
+  # ============================================================================
+  - id: blueprint_integration
+    name: "Blueprint Integration"
+    items:
+      - id: blueprintcallable_category
+        summary: "UFUNCTION(BlueprintCallable)에 Category 필수"
+        description: "BlueprintCallable 함수는 반드시 Category를 지정하여 블루프린트에서 찾기 쉽게 하세요."
+        tier: 3
+        severity: warning
+        auto_fixable: false
+
+      - id: blueprintcallable_const
+        summary: "BlueprintCallable Pure 함수는 const 권장"
+        description: "BlueprintPure 함수는 상태를 변경하지 않으므로 const로 선언하세요."
+        tier: 3
+        severity: info
+        auto_fixable: false
+
+  # ============================================================================
+  # Performance
+  # ============================================================================
+  - id: performance
+    name: "Performance"
+    items:
+      - id: tick_disable_when_possible
+        summary: "불필요한 Tick 비활성화"
+        description: |
+          PrimaryActorTick.bCanEverTick = false로 설정하거나
+          SetActorTickEnabled(false)로 동적으로 제어하세요.
+        tier: 3
+        severity: warning
+        auto_fixable: false
+
+      - id: tarray_reserve
+        summary: "TArray 크기를 알 때 Reserve 사용"
+        description: "TArray에 대량의 요소를 추가할 때 미리 Reserve()로 메모리를 할당하세요."
+        tier: 3
+        severity: info
+        auto_fixable: false
+
+      - id: avoid_blueprint_cast_in_tick
+        summary: "Tick에서 Cast 사용 자제"
+        description: "Tick 함수에서 반복적인 Cast는 성능 저하를 유발합니다. 캐싱하거나 인터페이스를 사용하세요."
+        tier: 3
+        severity: warning
+        auto_fixable: false
+
+  # ============================================================================
+  # Memory / GC
+  # ============================================================================
+  - id: memory_gc
+    name: "Memory / GC"
+    items:
+      - id: uobject_uproperty
+        summary: "UObject 포인터는 UPROPERTY로 관리"
+        description: |
+          UObject* 멤버 변수는 반드시 UPROPERTY()로 선언하여 가비지 컬렉션을 받도록 하세요.
+          그렇지 않으면 댕글링 포인터가 될 수 있습니다.
+        tier: 3
+        severity: error
+        auto_fixable: false
+
+      - id: shared_ptr_uobject
+        summary: "UObject에 TSharedPtr 사용 금지"
+        description: "UObject는 UE의 GC 시스템으로 관리됩니다. TSharedPtr을 사용하지 마세요."
+        tier: 3
+        severity: error
+        auto_fixable: false
+
+  # ============================================================================
+  # Code Style / Convention
+  # ============================================================================
+  - id: code_style
+    name: "Code Style / Convention"
+    items:
+      - id: boilerplate_comment
+        summary: "보일러플레이트 주석 제거"
+        description: "자동 생성된 'Fill out your copyright notice...' 등의 주석은 제거하세요 (오타: Bolier → Boiler)."
+        tier: 3
+        severity: info
+        auto_fixable: false
+
+      - id: structural_comment
+        summary: "구조적 주석 권장"
+        description: "복잡한 로직에는 What/Why를 설명하는 주석을 추가하세요."
+        tier: 3
+        severity: info
+        auto_fixable: false
