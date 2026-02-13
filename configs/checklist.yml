@@ -138,6 +138,21 @@ categories:
         pattern: "(UFUNCTION|UPROPERTY|UCLASS|USTRUCT|UENUM|UMETA|GENERATED_BODY|GENERATED_UCLASS_BODY)\\s*\\([^)]*\\)\\s*;"
         rationale: "auto-fix suggestion 생성 목적"
 
+      # --- Stage 1 (Regex) — check() 부작용 1차 필터 ---
+      - id: check_side_effect_suspicious
+        summary: "check() 매크로에 의심스러운 부작용 패턴 감지"
+        description: |
+          check() 내부에 증감 연산자(++/--), 복합 대입(+=/-=), 단순 대입(=) 등
+          부작용 가능성이 있는 패턴을 감지합니다. Stage 3(LLM)에서 최종 검증합니다.
+        tier: 1
+        severity: warning
+        auto_fixable: false
+        pattern: "check\\s*\\([^)]*(?:\\+\\+|--|[+\\-*/%&|^]=|<<=|>>=|(?<![=!<>])=(?!=))[^)]*\\)"
+        rationale: "1차 필터로 의심 케이스 포착, LLM 호출 부하 감소 (화이트리스트 함수 호출은 별도 처리 필요)"
+        tags: ["requires_llm_verification"]
+        whitelist_file: "configs/safe_functions.yml"
+
+      # --- Stage 3 (LLM) — check() 부작용 최종 판정 ---
       - id: check_side_effect
         summary: "check() 매크로 내부에 부작용 있는 코드 금지"
         description: |
@@ -146,8 +161,9 @@ categories:
         tier: 3
         severity: error
         auto_fixable: false
-        rationale: "부작용 여부는 시맨틱 분석 필요 (LLM). UE 공식 권장: check()는 부작용 X, verify()는 부작용 O"
+        rationale: "부작용 여부는 시맨틱 분석 필요 (LLM). Stage 1의 의심 케이스 + 함수 호출 검증. UE 공식 권장: check()는 부작용 X, verify()는 부작용 O"
         suggestion: "check()를 verify()로 변경하거나 로직을 분리하세요"
+        whitelist_file: "configs/safe_functions.yml"
 
       - id: unbraced_shipping_macro
         summary: "중괄호 없는 if/for문에서 shipping 매크로 사용 금지"
