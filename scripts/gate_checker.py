@@ -87,6 +87,7 @@ def _decode_git_path(path: str) -> str:
     # Handle standard C escapes first (use placeholder so \\\\ doesn't
     # interfere with octal matching)
     path = path.replace("\\\\", "\x00BACKSLASH\x00")
+    path = path.replace('\\"', '"')
     path = path.replace("\\t", "\t").replace("\\n", "\n")
 
     # Convert octal escapes to raw bytes, then decode as UTF-8.
@@ -347,7 +348,7 @@ def main() -> None:
         print(f"Error: Diff file not found: {args.diff}", file=sys.stderr)
         sys.exit(1)
 
-    diff_text = diff_path.read_text(encoding="utf-8")
+    diff_text = diff_path.read_text(encoding="utf-8", errors="replace")
 
     # Parse labels
     labels = [l.strip() for l in args.labels.split(",") if l.strip()]

@@ -142,6 +142,12 @@ class TestParseDiffFiles:
         assert len(files) == 1
         assert files[0] == "Source/한글/Actor.cpp"
 
+    def test_quoted_path_with_escaped_quote(self):
+        """Git escapes literal quotes in paths as \\\"."""
+        diff = 'diff --git "a/Source/foo\\"bar.cpp" "b/Source/foo\\"bar.cpp"'
+        files = parse_diff_files(diff)
+        assert files == ['Source/foo"bar.cpp']
+
     def test_empty_diff(self):
         assert parse_diff_files("") == []
 
@@ -565,3 +571,39 @@ class TestCLI:
         assert result.returncode == 0, f"CLI failed: {result.stderr}"
         data = json.loads(output_file.read_text())
         assert data["is_large_pr"] is True
+
+    def test_cli_with_non_utf8_diff(self, tmp_path):
+        """CLI should not crash on diff files containing non-UTF8 bytes."""
+        output_file = tmp_path / "result.json"
+        script = Path(__file__).resolve().parent.parent / "scripts" / "gate_checker.py"
+
+        # Create a diff with valid headers but non-UTF8 bytes in a hunk
+        diff_file = tmp_path / "non_utf8.patch"
+        header = (
+            b"diff --git a/Source/Actor.cpp b/Source/Actor.cpp\n"
+            b"--- a/Source/Actor.cpp\n"
+            b"+++ b/Source/Actor.cpp\n"
+            b"@@ -1 +1 @@\n"
+            b"-// old line with EUC-KR: \xc7\xd1\xb1\xdb\n"
+            b"+// new line\n"
+        )
+        diff_file.write_bytes(header)
+
+        import subprocess
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--diff", str(diff_file),
+                "--config", str(CONFIG_PATH),
+                "--output", str(output_file),
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+        assert result.returncode == 0, f"CLI failed on non-UTF8: {result.stderr}"
+        data = json.loads(output_file.read_text())
+        assert data["reviewable_count"] == 1
+        assert "Source/Actor.cpp" in data["reviewable_files"]
