@@ -89,8 +89,11 @@ class TestParseDiffFiles:
     def test_multiple_files(self):
         diff = textwrap.dedent("""\
             diff --git a/A.cpp b/A.cpp
+            +++ b/A.cpp
             diff --git a/B.h b/B.h
+            +++ b/B.h
             diff --git a/C.inl b/C.inl
+            +++ b/C.inl
         """)
         files = parse_diff_files(diff)
         assert files == ["A.cpp", "B.h", "C.inl"]
@@ -98,13 +101,15 @@ class TestParseDiffFiles:
     def test_no_duplicates(self):
         diff = textwrap.dedent("""\
             diff --git a/A.cpp b/A.cpp
+            +++ b/A.cpp
             diff --git a/A.cpp b/A.cpp
+            +++ b/A.cpp
         """)
         files = parse_diff_files(diff)
         assert files == ["A.cpp"]
 
-    def test_quoted_diff_header(self):
-        """Git emits quoted headers for non-ASCII or special-char filenames."""
+    def test_quoted_plus_header(self):
+        """Git emits quoted +++ headers for non-ASCII or special-char filenames."""
         diff = textwrap.dedent("""\
             diff --git "a/Source/MyActor.cpp" "b/Source/MyActor.cpp"
             --- "a/Source/MyActor.cpp"
@@ -117,10 +122,12 @@ class TestParseDiffFiles:
         assert files == ["Source/MyActor.cpp"]
 
     def test_quoted_mixed_with_unquoted(self):
-        """Mix of quoted and unquoted diff headers."""
+        """Mix of quoted and unquoted +++ headers."""
         diff = "\n".join([
             'diff --git "a/Source/Korean/Actor.cpp" "b/Source/Korean/Actor.cpp"',
+            '+++ "b/Source/Korean/Actor.cpp"',
             'diff --git a/Source/Normal.h b/Source/Normal.h',
+            '+++ b/Source/Normal.h',
         ])
         files = parse_diff_files(diff)
         assert files == ["Source/Korean/Actor.cpp", "Source/Normal.h"]
@@ -132,11 +139,11 @@ class TestParseDiffFiles:
           한 = UTF-8 bytes 0xED 0x95 0x9C = octal \\355\\225\\234
           글 = UTF-8 bytes 0xEA 0xB8 0x80 = octal \\352\\270\\200
         """
-        # Git would output: diff --git "a/Source/\355\225\234\352\270\200/Actor.cpp" ...
         diff = (
             'diff --git '
             '"a/Source/\\355\\225\\234\\352\\270\\200/Actor.cpp" '
-            '"b/Source/\\355\\225\\234\\352\\270\\200/Actor.cpp"'
+            '"b/Source/\\355\\225\\234\\352\\270\\200/Actor.cpp"\n'
+            '+++ "b/Source/\\355\\225\\234\\352\\270\\200/Actor.cpp"'
         )
         files = parse_diff_files(diff)
         assert len(files) == 1
@@ -144,9 +151,42 @@ class TestParseDiffFiles:
 
     def test_quoted_path_with_escaped_quote(self):
         """Git escapes literal quotes in paths as \\\"."""
-        diff = 'diff --git "a/Source/foo\\"bar.cpp" "b/Source/foo\\"bar.cpp"'
+        diff = (
+            'diff --git "a/Source/foo\\"bar.cpp" "b/Source/foo\\"bar.cpp"\n'
+            '+++ "b/Source/foo\\"bar.cpp"'
+        )
         files = parse_diff_files(diff)
         assert files == ['Source/foo"bar.cpp']
+
+    def test_binary_file_detection(self):
+        """Binary files are detected via 'Binary files ... and b/path differ'."""
+        diff = textwrap.dedent("""\
+            diff --git a/Content/Map.umap b/Content/Map.umap
+            Binary files /dev/null and b/Content/Map.umap differ
+        """)
+        files = parse_diff_files(diff)
+        assert files == ["Content/Map.umap"]
+
+    def test_path_with_space_b_slash(self):
+        """Paths containing ' b/' are parsed correctly via +++ lines."""
+        diff = textwrap.dedent("""\
+            diff --git a/foo b/file.cpp b/foo b/file.cpp
+            --- /dev/null
+            +++ b/foo b/file.cpp
+        """)
+        files = parse_diff_files(diff)
+        assert files == ["foo b/file.cpp"]
+
+    def test_deleted_file_skipped(self):
+        """+++ /dev/null (deleted files) should not appear in results."""
+        diff = textwrap.dedent("""\
+            diff --git a/Source/Old.cpp b/Source/Old.cpp
+            deleted file mode 100644
+            --- a/Source/Old.cpp
+            +++ /dev/null
+        """)
+        files = parse_diff_files(diff)
+        assert files == []
 
     def test_empty_diff(self):
         assert parse_diff_files("") == []

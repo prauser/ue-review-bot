@@ -116,20 +116,35 @@ def _decode_git_path(path: str) -> str:
     return path
 
 
-# Regex for diff headers: handles both quoted and unquoted forms
-# Unquoted: diff --git a/path b/path
-# Quoted:   diff --git "a/path" "b/path"
-_DIFF_HEADER_RE = re.compile(
-    r'^diff --git "?a/(.*?)"? "?b/(.*?)"?$'
-)
+# --- Diff header parsing regexes ---
+#
+# The `diff --git a/OLD b/NEW` header is inherently ambiguous when paths
+# contain ' b/' (e.g. a directory named "foo b").  Git's own tools rely on
+# the `--- a/` / `+++ b/` lines that follow, which are unambiguous because
+# each occupies its own line.
+#
+# Strategy:
+#   1. `+++ b/<path>` — primary source (unambiguous, one path per line)
+#   2. `Binary files ... and b/<path> differ` — for binary diffs (no +++ line)
+#   3. `diff --git` — NOT used for path extraction (kept only as section marker)
+
+# +++ b/path  or  +++ "b/path"  (skips +++ /dev/null for deleted files)
+_PLUS_HEADER_RE = re.compile(r'^\+\+\+ "?b/(.*?)"?$')
+
+# Binary files /dev/null and b/path differ  (or a/old and b/new)
+_BINARY_HEADER_RE = re.compile(r'^Binary files .+ and "?b/(.*?)"? differ$')
+
+# diff --git marker (only used to detect a new file section, not for path extraction)
+_DIFF_MARKER_RE = re.compile(r'^diff --git ')
 
 
 def parse_diff_files(diff_text: str) -> List[str]:
     """Extract changed file paths from a unified diff.
 
-    Parses 'diff --git a/path b/path' lines, including quoted forms
-    that Git emits for non-ASCII filenames or paths with special characters
-    (e.g. ``diff --git "a/..." "b/..."``).
+    Uses ``+++ b/path`` lines as the primary source (unambiguous), with
+    ``Binary files ... and b/path differ`` as fallback for binary diffs.
+    This avoids the inherent ambiguity of ``diff --git a/... b/...`` headers
+    when paths contain ``' b/'``.
 
     Args:
         diff_text: The raw unified diff text.
@@ -140,13 +155,24 @@ def parse_diff_files(diff_text: str) -> List[str]:
     files = []
     seen = set()
 
+    def _add(filepath: str) -> None:
+        filepath = _decode_git_path(filepath)
+        if filepath and filepath not in seen:
+            files.append(filepath)
+            seen.add(filepath)
+
     for line in diff_text.splitlines():
-        match = _DIFF_HEADER_RE.match(line)
-        if match:
-            filepath = _decode_git_path(match.group(2))
-            if filepath not in seen:
-                files.append(filepath)
-                seen.add(filepath)
+        # Primary: +++ b/path (not +++ /dev/null)
+        m = _PLUS_HEADER_RE.match(line)
+        if m:
+            _add(m.group(1))
+            continue
+
+        # Fallback for binary files (they lack +++ lines)
+        m = _BINARY_HEADER_RE.match(line)
+        if m:
+            _add(m.group(1))
+            continue
 
     return files
 
