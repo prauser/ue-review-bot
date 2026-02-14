@@ -507,6 +507,13 @@ class TestLoadConfig:
         with pytest.raises(FileNotFoundError):
             load_config("/nonexistent/path/config.yml")
 
+    def test_empty_config_file(self, tmp_path):
+        """Empty YAML file (parses to None) should raise ValueError, not TypeError."""
+        empty_config = tmp_path / "empty.yml"
+        empty_config.write_text("")
+        with pytest.raises(ValueError, match="empty or not a YAML mapping"):
+            load_config(str(empty_config))
+
     def test_missing_required_key(self, tmp_path):
         bad_config = tmp_path / "bad.yml"
         bad_config.write_text("version: '1.0'\nskip_patterns: []\n")

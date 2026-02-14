@@ -53,6 +53,9 @@ def load_config(config_path: str) -> Dict[str, Any]:
     with open(path, "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
 
+    if not isinstance(config, dict):
+        raise ValueError(f"Config file is empty or not a YAML mapping: {config_path}")
+
     # Validate required keys
     required_keys = ["skip_patterns", "max_reviewable_files", "large_pr_labels"]
     for key in required_keys:
