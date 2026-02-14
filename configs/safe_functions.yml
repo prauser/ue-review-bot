@@ -1,0 +1,160 @@
+# Safe Functions Whitelist for check_side_effect Detection
+# Functions listed here are considered "side-effect free" (pure read-only operations)
+# Used by Tier 1 regex filter to reduce false positives
+#
+# ⚠️ Only add functions that:
+#   1. Do NOT modify any state (no variable changes)
+#   2. Do NOT perform I/O operations
+#   3. Are deterministic (same input → same output)
+#   4. Are commonly used in check() assertions
+#
+# Format:
+#   - category_name:
+#       - FunctionName
+#       - AnotherFunction
+
+version: "1.0"
+
+# ==============================================================================
+# UE5 Core Functions
+# ==============================================================================
+
+uobject_gc:
+  # UObject validity and GC checks
+  - IsValid
+  - IsValidChecked
+  - IsPendingKill          # Deprecated but safe (read-only)
+  - IsValidLowLevel
+  - IsValidLowLevelFast
+
+container_queries:
+  # TArray, TSet, TMap queries
+  - Num                     # Get size
+  - Len                     # String length
+  - IsEmpty
+  - IsValidIndex
+  - Contains
+  - Find
+  - FindLast
+  - IndexOfByKey
+  - IndexOfByPredicate
+  - GetAllocatedSize        # Memory query (read-only)
+
+math_utils:
+  # Math operations (pure functions)
+  - IsInRange
+  - Max
+  - Min
+  - Abs
+  - Clamp
+  - FMath::IsNearlyEqual
+  - FMath::IsNearlyZero
+  - FMath::Abs
+  - FMath::Min
+  - FMath::Max
+  - FMath::Clamp
+  - FMath::Square
+  - FMath::Sqrt
+
+reflection:
+  # Reflection queries
+  - GetClass
+  - GetName
+  - GetFName
+  - GetFullName
+  - GetPathName
+  - GetOuter
+  - GetTypedOuter
+  - IsA                     # Type check
+  - IsChildOf
+  - ImplementsInterface
+  - HasAnyFlags
+  - HasAllFlags
+
+networking:
+  # Networking state queries
+  - HasAuthority
+  - HasLocalNetOwner
+  - GetLocalRole
+  - GetRemoteRole
+  - IsNetMode
+  - IsLocallyControlled
+  - IsRemotelyControlled
+
+hierarchy:
+  # Actor/Component hierarchy (read-only getters)
+  - GetWorld
+  - GetOwner
+  - GetAttachParent
+  - GetAttachChildren
+  - GetRootComponent
+  - GetComponentByClass
+  - FindComponentByClass
+
+actor_state:
+  # Actor state queries (read-only)
+  - IsActorBeingDestroyed
+  - IsPendingKillPending
+  - IsHidden
+  - GetActorLocation
+  - GetActorRotation
+  - GetActorScale3D
+  - GetActorForwardVector
+  - GetActorRightVector
+  - GetActorUpVector
+
+character_state:
+  # Character/Pawn state queries
+  - IsLocallyControlled
+  - IsPlayerControlled
+  - IsBotControlled
+  - GetVelocity
+  - GetMovementComponent
+
+component_state:
+  # Component state queries
+  - IsActive
+  - IsRegistered
+  - IsBeingDestroyed
+
+string_operations:
+  # FString/FName operations (read-only)
+  - IsEmpty
+  - Len
+  - Contains
+  - StartsWith
+  - EndsWith
+  - Compare
+  - Equals
+  - ToString
+  - ToLower
+  - ToUpper
+
+# ==============================================================================
+# Project-Specific Safe Functions
+# ==============================================================================
+# Add your project's custom read-only functions here
+# Example:
+# project_custom:
+#   - IsPlayerAlive        # Only if it's a pure getter
+#   - GetPlayerScore       # Read-only score query
+
+project_custom: []
+
+# ==============================================================================
+# Validation & Testing
+# ==============================================================================
+# Use scripts/validate_safe_functions.py to verify these functions are actually safe
+#
+# Example test:
+#   def test_is_valid():
+#       obj = UObject()
+#       result1 = IsValid(obj)
+#       result2 = IsValid(obj)
+#       assert result1 == result2  # ✅ Deterministic
+#       assert obj.state_unchanged()  # ✅ No side effects
+
+# ==============================================================================
+# Change Log
+# ==============================================================================
+# 2026-02-13: Initial version - UE5 core functions

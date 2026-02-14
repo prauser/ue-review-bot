@@ -1,0 +1,113 @@
+# Gate Configuration — Large PR Detection
+# Controls which PRs are classified as "large" and how they are handled
+# Reference: PLAN.md § 대규모 PR 안전장치
+
+version: "1.0"
+
+# ============================================================================
+# File Filters (Always Applied)
+# ============================================================================
+# These patterns are ALWAYS excluded from analysis, regardless of PR size
+# They do NOT count towards the reviewable file count
+
+skip_patterns:
+  # Third-party libraries
+  - "ThirdParty/"
+  - "Plugins/.*/ThirdParty/"
+  - "External/"
+  - "Vendor/"
+
+  # Auto-generated files
+  - "\\.generated\\.h$"
+  - "\\.gen\\.cpp$"
+
+  # Build artifacts
+  - "Intermediate/"
+  - "DerivedDataCache/"
+  - "Binaries/"
+  - "Build/"
+  - "Saved/"
+
+  # Binary assets (not reviewable)
+  - "\\.uasset$"
+  - "\\.umap$"
+  - "\\.upk$"
+  - "\\.pak$"
+
+  # Other binary files
+  - "\\.dll$"
+  - "\\.so$"
+  - "\\.dylib$"
+  - "\\.exe$"
+  - "\\.obj$"
+  - "\\.o$"
+  - "\\.a$"
+  - "\\.lib$"
+
+  # Media files
+  - "\\.png$"
+  - "\\.jpg$"
+  - "\\.jpeg$"
+  - "\\.gif$"
+  - "\\.bmp$"
+  - "\\.tga$"
+  - "\\.wav$"
+  - "\\.mp3$"
+  - "\\.ogg$"
+  - "\\.fbx$"
+  - "\\.obj$"
+  - "\\.blend$"
+
+# ============================================================================
+# Size-based PR Classification
+# ============================================================================
+# Applied AFTER skip_patterns filter
+
+# Maximum number of reviewable files before PR is considered "large"
+max_reviewable_files: 50
+
+# ============================================================================
+# Label-based PR Classification
+# ============================================================================
+# PRs with any of these labels are ALWAYS considered "large"
+# regardless of file count
+
+large_pr_labels:
+  - "migration"
+  - "large-change"
+  - "engine-update"
+  - "mass-refactor"
+  - "auto-merge"        # Bot-generated mass changes
+  - "dependencies"      # Dependency updates (often touches many files)
+
+# ============================================================================
+# Stage Execution Rules for Large PRs
+# ============================================================================
+# These are enforced in the workflow scripts:
+#
+# Large PR Detection:
+#   IF (reviewable_files > max_reviewable_files) OR (has_large_pr_label):
+#     → Large PR
+#
+# Automatic Review (PR created/updated):
+#   Normal PR:  Stage 1 + Stage 2 (if available) + Stage 3
+#   Large PR:   Stage 1 + Stage 2 (if available), NO Stage 3
+#
+# Manual Review (/review command):
+#   Normal PR:  Stage 1 + Stage 2 (if available) + Stage 3
+#   Large PR:   Stage 1 + Stage 2 (if available), NO Stage 3
+#
+# Rationale:
+#   - Stage 1 (Regex): Fast, low cost → Always run
+#   - Stage 2 (PVS-Studio): Fast, medium cost, high accuracy → Always run when available
+#   - Stage 3 (LLM): Slow, high cost, token limits → Block for large PRs
+#
+# Stage 2 Availability:
+#   - Requires: compile_commands.json (UE5 project compilation database)
+#   - Checks: Tier 2 rules (override_keyword, virtual_destructor, unnecessary_copy, unbraced_shipping_macro)
+#   - Cost: ~5 min build time + PVS-Studio license
+#
+# Stage 3 is BLOCKED for large PRs to prevent:
+#   - Excessive API costs (LLM tokens)
+#   - Context window overflow (100+ files)
+#   - Incomplete/truncated reviews
