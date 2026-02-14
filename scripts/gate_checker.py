@@ -151,6 +151,10 @@ def parse_diff_files(diff_text: str) -> List[str]:
     This avoids the inherent ambiguity of ``diff --git a/... b/...`` headers
     when paths contain ``' b/'``.
 
+    Only ``+++ b/`` lines in the header section (between ``diff --git`` and
+    the first ``@@`` hunk marker) are considered — this prevents false positives
+    from added lines like ``++ b/Foo.cpp`` inside hunk bodies.
+
     Args:
         diff_text: The raw unified diff text.
 
@@ -159,6 +163,7 @@ def parse_diff_files(diff_text: str) -> List[str]:
     """
     files = []
     seen = set()
+    in_header = False  # True between 'diff --git' and first '@@'
 
     def _add(filepath: str) -> None:
         filepath = _decode_git_path(filepath)
@@ -167,23 +172,35 @@ def parse_diff_files(diff_text: str) -> List[str]:
             seen.add(filepath)
 
     for line in diff_text.splitlines():
-        # Primary: +++ b/path (not +++ /dev/null)
-        m = _PLUS_HEADER_RE.match(line)
-        if m:
-            _add(m.group(1))
+        # Track state: 'diff --git' starts a header, '@@' starts hunk body
+        if _DIFF_MARKER_RE.match(line):
+            in_header = True
             continue
 
-        # Fallback for binary files (they lack +++ lines)
-        m = _BINARY_HEADER_RE.match(line)
-        if m:
-            _add(m.group(1))
+        if line.startswith("@@"):
+            in_header = False
             continue
 
-        # Fallback for rename-only diffs (100% similarity, no +++ line)
-        m = _RENAME_TO_RE.match(line)
-        if m:
-            _add(m.group(1))
-            continue
+        # Primary: +++ b/path — only in header section
+        if in_header:
+            m = _PLUS_HEADER_RE.match(line)
+            if m:
+                _add(m.group(1))
+                continue
+
+        # Fallback for binary files (they lack +++ lines, always in header)
+        if in_header:
+            m = _BINARY_HEADER_RE.match(line)
+            if m:
+                _add(m.group(1))
+                continue
+
+        # Fallback for rename-only diffs (always in header)
+        if in_header:
+            m = _RENAME_TO_RE.match(line)
+            if m:
+                _add(m.group(1))
+                continue
 
     return files
 

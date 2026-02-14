@@ -217,6 +217,23 @@ class TestParseDiffFiles:
         assert files == ["Source/New.cpp"]
         assert len(files) == 1  # No duplicate
 
+    def test_plus_plus_in_hunk_body_ignored(self):
+        """An added line starting with '++ b/' inside a hunk must not be
+        mistaken for a +++ file header."""
+        diff = textwrap.dedent("""\
+            diff --git a/Source/MyActor.cpp b/Source/MyActor.cpp
+            --- a/Source/MyActor.cpp
+            +++ b/Source/MyActor.cpp
+            @@ -1,3 +1,4 @@
+             // existing line
+            +++ b/Bogus.cpp
+            +// this line starts with ++ b/ but is just added content
+             // another existing line
+        """)
+        files = parse_diff_files(diff)
+        assert files == ["Source/MyActor.cpp"]
+        assert "Bogus.cpp" not in files
+
     def test_empty_diff(self):
         assert parse_diff_files("") == []
 
