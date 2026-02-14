@@ -188,6 +188,35 @@ class TestParseDiffFiles:
         files = parse_diff_files(diff)
         assert files == []
 
+    def test_rename_only_diff(self):
+        """Rename-only diffs (100% similarity) have no +++ line."""
+        diff = textwrap.dedent("""\
+            diff --git a/Source/OldName.cpp b/Source/NewName.cpp
+            similarity index 100%
+            rename from Source/OldName.cpp
+            rename to Source/NewName.cpp
+        """)
+        files = parse_diff_files(diff)
+        assert files == ["Source/NewName.cpp"]
+
+    def test_rename_with_content_change(self):
+        """Rename with content changes has both rename to and +++ lines.
+        The +++ line is primary, and deduplication handles the rename to."""
+        diff = textwrap.dedent("""\
+            diff --git a/Source/Old.cpp b/Source/New.cpp
+            similarity index 80%
+            rename from Source/Old.cpp
+            rename to Source/New.cpp
+            --- a/Source/Old.cpp
+            +++ b/Source/New.cpp
+            @@ -1 +1 @@
+            -old
+            +new
+        """)
+        files = parse_diff_files(diff)
+        assert files == ["Source/New.cpp"]
+        assert len(files) == 1  # No duplicate
+
     def test_empty_diff(self):
         assert parse_diff_files("") == []
 

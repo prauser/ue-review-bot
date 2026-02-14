@@ -126,13 +126,17 @@ def _decode_git_path(path: str) -> str:
 # Strategy:
 #   1. `+++ b/<path>` — primary source (unambiguous, one path per line)
 #   2. `Binary files ... and b/<path> differ` — for binary diffs (no +++ line)
-#   3. `diff --git` — NOT used for path extraction (kept only as section marker)
+#   3. `rename to <path>` — for rename-only diffs (no +++ line, 100% similarity)
+#   4. `diff --git` — NOT used for path extraction (kept only as section marker)
 
 # +++ b/path  or  +++ "b/path"  (skips +++ /dev/null for deleted files)
 _PLUS_HEADER_RE = re.compile(r'^\+\+\+ "?b/(.*?)"?$')
 
 # Binary files /dev/null and b/path differ  (or a/old and b/new)
 _BINARY_HEADER_RE = re.compile(r'^Binary files .+ and "?b/(.*?)"? differ$')
+
+# rename to <path>  (for rename-only diffs with 100% similarity, which lack +++ lines)
+_RENAME_TO_RE = re.compile(r'^rename to "?(.*?)"?$')
 
 # diff --git marker (only used to detect a new file section, not for path extraction)
 _DIFF_MARKER_RE = re.compile(r'^diff --git ')
@@ -142,7 +146,8 @@ def parse_diff_files(diff_text: str) -> List[str]:
     """Extract changed file paths from a unified diff.
 
     Uses ``+++ b/path`` lines as the primary source (unambiguous), with
-    ``Binary files ... and b/path differ`` as fallback for binary diffs.
+    ``Binary files ... and b/path differ`` for binary diffs and
+    ``rename to path`` for rename-only diffs (100% similarity, no +++ line).
     This avoids the inherent ambiguity of ``diff --git a/... b/...`` headers
     when paths contain ``' b/'``.
 
@@ -170,6 +175,12 @@ def parse_diff_files(diff_text: str) -> List[str]:
 
         # Fallback for binary files (they lack +++ lines)
         m = _BINARY_HEADER_RE.match(line)
+        if m:
+            _add(m.group(1))
+            continue
+
+        # Fallback for rename-only diffs (100% similarity, no +++ line)
+        m = _RENAME_TO_RE.match(line)
         if m:
             _add(m.group(1))
             continue
