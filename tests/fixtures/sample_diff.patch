@@ -1,0 +1,136 @@
+diff --git a/Source/MyGame/Actors/MyActor.cpp b/Source/MyGame/Actors/MyActor.cpp
+new file mode 100644
+index 0000000..1234567
+--- /dev/null
++++ b/Source/MyGame/Actors/MyActor.cpp
+@@ -0,0 +1,20 @@
++#include "MyActor.h"
++
++AMyActor::AMyActor()
++{
++    PrimaryActorTick.bCanEverTick = true;
++}
++
++void AMyActor::BeginPlay()
++{
++    Super::BeginPlay();
++    UE_LOG(LogTemp, Warning, TEXT("BeginPlay called"));
++}
++
++void AMyActor::Tick(float DeltaTime)
++{
++    Super::Tick(DeltaTime);
++}
+diff --git a/Source/MyGame/Actors/MyActor.h b/Source/MyGame/Actors/MyActor.h
+new file mode 100644
+index 0000000..2345678
+--- /dev/null
++++ b/Source/MyGame/Actors/MyActor.h
+@@ -0,0 +1,25 @@
++#pragma once
++
++#include "CoreMinimal.h"
++#include "GameFramework/Actor.h"
++#include "MyActor.generated.h"
++
++UCLASS()
++class MYGAME_API AMyActor : public AActor
++{
++    GENERATED_BODY()
++
++public:
++    AMyActor();
++
++protected:
++    virtual void BeginPlay() override;
++
++public:
++    virtual void Tick(float DeltaTime) override;
++
++    UPROPERTY(EditAnywhere)
++    int32 SomeValue;
++};
+diff --git a/Source/MyGame/Utils/Helper.cpp b/Source/MyGame/Utils/Helper.cpp
+new file mode 100644
+index 0000000..3456789
+--- /dev/null
++++ b/Source/MyGame/Utils/Helper.cpp
+@@ -0,0 +1,10 @@
++#include "Helper.h"
++
++int32 UHelper::ComputeValue(int32 Input)
++{
++    return Input * 2;
++}
+diff --git a/Source/MyGame/Utils/Helper.h b/Source/MyGame/Utils/Helper.h
+new file mode 100644
+index 0000000..4567890
+--- /dev/null
++++ b/Source/MyGame/Utils/Helper.h
+@@ -0,0 +1,15 @@
++#pragma once
++
++#include "CoreMinimal.h"
++#include "Helper.generated.h"
++
++UCLASS()
++class MYGAME_API UHelper : public UObject
++{
++    GENERATED_BODY()
++
++public:
++    UFUNCTION(BlueprintCallable)
++    static int32 ComputeValue(int32 Input);
++};
+diff --git a/ThirdParty/protobuf/src/google/protobuf/message.cc b/ThirdParty/protobuf/src/google/protobuf/message.cc
+new file mode 100644
+index 0000000..5678901
+--- /dev/null
++++ b/ThirdParty/protobuf/src/google/protobuf/message.cc
+@@ -0,0 +1,5 @@
++// Third party file — should be skipped
++void Message::Clear() {
++    // implementation
++}
+diff --git a/Source/MyGame/MyGame.Build.cs b/Source/MyGame/MyGame.Build.cs
+new file mode 100644
+index 0000000..6789012
+--- /dev/null
++++ b/Source/MyGame/MyGame.Build.cs
+@@ -0,0 +1,10 @@
++using UnrealBuildTool;
++
++public class MyGame : ModuleRules
++{
++    public MyGame(ReadOnlyTargetRules Target) : base(Target)
++    {
++        PCHUsage = PCHUsageMode.UseExplicitOrSharedPCHs;
++        PublicDependencyModuleNames.AddRange(new string[] { "Core", "CoreUObject", "Engine" });
++    }
++}
+diff --git a/Content/Maps/TestMap.umap b/Content/Maps/TestMap.umap
+new file mode 100644
+index 0000000..7890123
+Binary files /dev/null and b/Content/Maps/TestMap.umap differ
+diff --git a/Content/Textures/T_Default.uasset b/Content/Textures/T_Default.uasset
+new file mode 100644
+index 0000000..8901234
+Binary files /dev/null and b/Content/Textures/T_Default.uasset differ
+diff --git a/Intermediate/Build/Win64/MyGame.generated.h b/Intermediate/Build/Win64/MyGame.generated.h
+new file mode 100644
+index 0000000..9012345
+--- /dev/null
++++ b/Intermediate/Build/Win64/MyGame.generated.h
+@@ -0,0 +1,3 @@
++// Auto-generated — should be skipped
++#pragma once
++GENERATED_BODY()
+diff --git a/Source/MyGame/MyActor.generated.h b/Source/MyGame/MyActor.generated.h
+new file mode 100644
+index 0000000..0123456
+--- /dev/null
++++ b/Source/MyGame/MyActor.generated.h
+@@ -0,0 +1,3 @@
++// Auto-generated — should be skipped
++#pragma once
++GENERATED_BODY()

@@ -1,7 +1,7 @@
 # HANDOFF — UE5 코드리뷰 자동화 시스템 구현 진행상황
 
 > 세션 간 작업 인계를 위한 문서
-> 최종 업데이트: 2026-02-13
+> 최종 업데이트: 2026-02-14
 
 ---
 
@@ -11,7 +11,8 @@
 
 **총 7개 Step 중 현재 진행:**
 - ✅ **Step 1 완료** (설정 파일 생성)
-- 🔜 **Step 2 진행 예정** (테스트 픽스처 + Gate Checker)
+- ✅ **Step 2 완료** (테스트 픽스처 + Gate Checker)
+- 🔜 **Step 3 진행 예정** (Stage 1 — regex 패턴 매칭)
 
 **전체 계획:** `PLAN.md` 참조
 
@@ -50,46 +51,52 @@
 
 ---
 
-## 🔜 다음 작업: Step 2
+## ✅ 완료된 작업: Step 2
 
 ### Step 2: 테스트 픽스처 + Gate Checker
 
 **상세 스펙:** `docs/steps/STEP2_GATE.md`
-**브랜치 명명:** `claude/review-plan-step2-<SESSION_ID>` (새 세션에서 생성)
+**브랜치:** `claude/implement-step2-gate-pEDwB`
+**상태:** 커밋/푸시 완료
 
-#### 생성할 파일
+#### 생성된 파일 (8개)
 
-```
-ue5-review-bot/
-├── scripts/
-│   ├── gate_checker.py          # Gate 로직 (대규모 PR 판정)
-│   └── utils/                   # 유틸리티 (향후 추가)
-├── tests/
-│   ├── fixtures/                # 테스트용 PR diff 샘플
-│   │   ├── normal_pr.diff
-│   │   ├── large_pr.diff
-│   │   └── filtered_files.diff
-│   └── test_gate_checker.py     # Gate Checker 유닛 테스트
-```
+| 파일 | 설명 |
+|------|------|
+| `tests/fixtures/sample_bad.cpp` | 의도적 규칙 위반 샘플 (Stage 1 + Stage 3) |
+| `tests/fixtures/sample_good.cpp` | 규칙 준수 샘플 (false positive 0 확인용) |
+| `tests/fixtures/sample_network.cpp` | 네트워크 위반 샘플 |
+| `tests/fixtures/sample_diff.patch` | 테스트용 unified diff (10 파일, C++/ThirdParty/binary 혼합) |
+| `scripts/gate_checker.py` | Gate 로직 (대규모 PR 판정 + 파일 필터링) |
+| `scripts/utils/gh_api.py` | GitHub API 유틸리티 (PR 라벨 조회) |
+| `tests/test_gate_checker.py` | Gate Checker 유닛/통합 테스트 (38개) |
+| `scripts/__init__.py`, `scripts/utils/__init__.py`, `tests/__init__.py` | 패키지 초기화 |
 
 #### 주요 구현 사항
 
-1. **gate_checker.py:**
-   - `gate_config.yml` 파싱
-   - PR diff 파일 목록 추출
-   - skip_patterns 필터링
-   - 대규모 PR 판정 (파일 수 + 레이블)
-   - 출력: `is_large_pr: true/false`, `reviewable_files: []`
+**`gate_checker.py` 2단계 로직:**
+1. **파일 필터:** `gate_config.yml`의 `skip_patterns` + C++ 확장자 필터
+2. **규모 판정:** reviewable 파일 수 > 50 OR 대규모 PR 라벨 → is_large_pr
 
-2. **테스트 픽스처:**
-   - 정상 PR (20파일, .cpp/.h)
-   - 대규모 PR (60파일)
-   - 필터링 대상 포함 PR (ThirdParty, .generated.h)
+**CLI 인터페이스:**
+```bash
+python scripts/gate_checker.py \
+  --diff <diff-file> \
+  --config configs/gate_config.yml \
+  --output gate-result.json \
+  --labels migration,large-change
+```
 
-3. **pytest 유닛 테스트:**
-   - 파일 필터링 검증
-   - 대규모 판정 로직 검증
-   - edge case 처리
+**테스트 결과:** 38 passed (pytest)
+
+---
+
+## 🔜 다음 작업: Step 3
+
+### Step 3: Stage 1 — regex 패턴 매칭
+
+**상세 스펙:** `docs/steps/STEP3_STAGE1.md`
+**브랜치 명명:** `claude/review-plan-step3-<SESSION_ID>` (새 세션에서 생성)
 
 ---
 
@@ -104,11 +111,25 @@ ue5-review-bot/
 │   ├── .editorconfig
 │   ├── checklist.yml
 │   └── gate_config.yml
+├── scripts/                     # ✅ Step 2 완료
+│   ├── __init__.py
+│   ├── gate_checker.py          # Gate 로직 (대규모 PR 판정)
+│   └── utils/
+│       ├── __init__.py
+│       └── gh_api.py            # GitHub API 유틸리티
+├── tests/                       # ✅ Step 2 완료
+│   ├── __init__.py
+│   ├── test_gate_checker.py     # Gate Checker 테스트 (38개)
+│   └── fixtures/
+│       ├── sample_bad.cpp       # 규칙 위반 샘플
+│       ├── sample_good.cpp      # 규칙 준수 샘플
+│       ├── sample_network.cpp   # 네트워크 위반 샘플
+│       └── sample_diff.patch    # 테스트용 diff
 └── docs/
     └── steps/                   # Step별 상세 스펙
         ├── STEP1_CONFIGS.md     # ✅ 완료
-        ├── STEP2_GATE.md        # 🔜 다음
-        ├── STEP3_STAGE1.md
+        ├── STEP2_GATE.md        # ✅ 완료
+        ├── STEP3_STAGE1.md      # 🔜 다음
         ├── STEP5_STAGE2.md      # (STEP4는 없음)
         ├── STEP6_STAGE3.md
         └── STEP7_WORKFLOWS.md
@@ -162,20 +183,19 @@ Stage 3 (LLM 리뷰)     → Stage 1 이관 항목 포함, 의미론적 리뷰 �
    git status
    ```
 
-2. **Step 2 스펙 읽기:**
+2. **Step 3 스펙 읽기:**
    ```bash
-   cat docs/steps/STEP2_GATE.md
+   cat docs/steps/STEP3_STAGE1.md
    ```
 
 3. **새 브랜치 생성 (또는 기존 브랜치 체크아웃):**
    ```bash
-   git checkout -b claude/review-plan-step2-<NEW_SESSION_ID>
+   git checkout -b claude/review-plan-step3-<NEW_SESSION_ID>
    ```
 
 4. **작업 시작:**
-   - `scripts/gate_checker.py` 구현
-   - `tests/fixtures/` 생성
-   - `tests/test_gate_checker.py` 작성
+   - `scripts/stage1_regex.py` 구현 (Tier 1 regex 패턴 7개)
+   - `tests/test_stage1_regex.py` 작성
    - pytest 실행 및 검증
    - 커밋/푸시
 
