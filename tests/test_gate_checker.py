@@ -103,6 +103,28 @@ class TestParseDiffFiles:
         files = parse_diff_files(diff)
         assert files == ["A.cpp"]
 
+    def test_quoted_diff_header(self):
+        """Git emits quoted headers for non-ASCII or special-char filenames."""
+        diff = textwrap.dedent("""\
+            diff --git "a/Source/MyActor.cpp" "b/Source/MyActor.cpp"
+            --- "a/Source/MyActor.cpp"
+            +++ "b/Source/MyActor.cpp"
+            @@ -1 +1 @@
+            -old
+            +new
+        """)
+        files = parse_diff_files(diff)
+        assert files == ["Source/MyActor.cpp"]
+
+    def test_quoted_mixed_with_unquoted(self):
+        """Mix of quoted and unquoted diff headers."""
+        diff = "\n".join([
+            'diff --git "a/Source/Korean/Actor.cpp" "b/Source/Korean/Actor.cpp"',
+            'diff --git a/Source/Normal.h b/Source/Normal.h',
+        ])
+        files = parse_diff_files(diff)
+        assert files == ["Source/Korean/Actor.cpp", "Source/Normal.h"]
+
     def test_empty_diff(self):
         assert parse_diff_files("") == []
 

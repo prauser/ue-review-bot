@@ -62,11 +62,44 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
+def _unquote_git_path(path: str) -> str:
+    """Unquote a Git-quoted path (e.g. octal escapes for non-ASCII).
+
+    Git quotes paths containing non-ASCII or special characters like:
+      "Source/\\355\\225\\234\\352\\270\\200/MyActor.cpp"
+
+    Args:
+        path: Possibly quoted path string.
+
+    Returns:
+        Unquoted path string.
+    """
+    if path.startswith('"') and path.endswith('"'):
+        path = path[1:-1]
+        # Decode Git's octal escape sequences (e.g. \\303\\251 → bytes)
+        def _replace_octal(m: re.Match) -> str:
+            return chr(int(m.group(1), 8))
+
+        path = re.sub(r"\\([0-3][0-7]{2})", _replace_octal, path)
+        # Handle standard C escapes
+        path = path.replace("\\\\", "\\").replace("\\t", "\t").replace("\\n", "\n")
+    return path
+
+
+# Regex for diff headers: handles both quoted and unquoted forms
+# Unquoted: diff --git a/path b/path
+# Quoted:   diff --git "a/path" "b/path"
+_DIFF_HEADER_RE = re.compile(
+    r'^diff --git "?a/(.*?)"? "?b/(.*?)"?$'
+)
+
+
 def parse_diff_files(diff_text: str) -> List[str]:
     """Extract changed file paths from a unified diff.
 
-    Parses 'diff --git a/path b/path' lines and also handles
-    binary file diffs ('Binary files ... differ').
+    Parses 'diff --git a/path b/path' lines, including quoted forms
+    that Git emits for non-ASCII filenames or paths with special characters
+    (e.g. ``diff --git "a/..." "b/..."``).
 
     Args:
         diff_text: The raw unified diff text.
@@ -78,10 +111,9 @@ def parse_diff_files(diff_text: str) -> List[str]:
     seen = set()
 
     for line in diff_text.splitlines():
-        # Match 'diff --git a/path b/path'
-        match = re.match(r"^diff --git a/(.*?) b/(.*?)$", line)
+        match = _DIFF_HEADER_RE.match(line)
         if match:
-            filepath = match.group(2)  # Use the 'b/' side (destination)
+            filepath = _unquote_git_path(match.group(2))
             if filepath not in seen:
                 files.append(filepath)
                 seen.add(filepath)
