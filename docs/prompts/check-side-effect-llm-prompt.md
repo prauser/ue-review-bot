@@ -63,8 +63,8 @@ The following UE5 functions are **guaranteed side-effect free**:
    - Assignment operators (`=`, `+=`, `-=`, etc.)
    - Function calls (check against whitelist)
 3. **Consider Shipping build impact**: Will removing this expression change behavior?
-4. **Provide verdict**: SAFE or UNSAFE
-5. **Generate suggestion** if UNSAFE
+4. **Provide verdict**: SAFE, UNSAFE, or UNCERTAIN (if unable to determine)
+5. **Generate suggestion** if UNSAFE or UNCERTAIN
 
 ---
 
@@ -85,7 +85,7 @@ Please respond in the following JSON format:
 
 ```json
 {
-  "verdict": "SAFE" | "UNSAFE",
+  "verdict": "SAFE" | "UNSAFE" | "UNCERTAIN",
   "confidence": 0.0-1.0,
   "reasoning": "Brief explanation of the analysis",
   "side_effects_found": [
@@ -97,7 +97,7 @@ Please respond in the following JSON format:
   ],
   "shipping_impact": "Description of what breaks in Shipping build",
   "suggestion": {
-    "action": "use_verify" | "split_logic" | "none",
+    "action": "use_verify" | "split_logic" | "none" | "manual_review",
     "code": "Corrected code snippet",
     "explanation": "Why this fix works"
   }
