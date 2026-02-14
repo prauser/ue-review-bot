@@ -125,6 +125,23 @@ class TestParseDiffFiles:
         files = parse_diff_files(diff)
         assert files == ["Source/Korean/Actor.cpp", "Source/Normal.h"]
 
+    def test_quoted_octal_utf8_korean(self):
+        """Git octal escapes for Korean UTF-8 bytes must decode correctly.
+
+        '한글' = U+D55C U+AE00
+          한 = UTF-8 bytes 0xED 0x95 0x9C = octal \\355\\225\\234
+          글 = UTF-8 bytes 0xEA 0xB8 0x80 = octal \\352\\270\\200
+        """
+        # Git would output: diff --git "a/Source/\355\225\234\352\270\200/Actor.cpp" ...
+        diff = (
+            'diff --git '
+            '"a/Source/\\355\\225\\234\\352\\270\\200/Actor.cpp" '
+            '"b/Source/\\355\\225\\234\\352\\270\\200/Actor.cpp"'
+        )
+        files = parse_diff_files(diff)
+        assert len(files) == 1
+        assert files[0] == "Source/한글/Actor.cpp"
+
     def test_empty_diff(self):
         assert parse_diff_files("") == []
 

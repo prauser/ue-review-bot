@@ -62,27 +62,53 @@ def load_config(config_path: str) -> Dict[str, Any]:
     return config
 
 
-def _unquote_git_path(path: str) -> str:
-    """Unquote a Git-quoted path (e.g. octal escapes for non-ASCII).
+def _decode_git_path(path: str) -> str:
+    """Decode Git escape sequences in a path string.
 
-    Git quotes paths containing non-ASCII or special characters like:
-      "Source/\\355\\225\\234\\352\\270\\200/MyActor.cpp"
+    Git quotes paths containing non-ASCII or special characters. The regex
+    already strips outer quotes, so this function always attempts to decode
+    octal escapes (``\\NNN``) and C escapes (``\\\\``, ``\\t``, ``\\n``).
+
+    Octal escapes represent raw UTF-8 bytes, so consecutive sequences must
+    be collected into a bytearray and decoded together — converting each
+    byte individually via ``chr()`` would produce mojibake for multi-byte
+    characters like Korean (e.g. ``\\355\\225\\234`` → ``한``).
 
     Args:
-        path: Possibly quoted path string.
+        path: Path string, possibly containing escape sequences.
 
     Returns:
-        Unquoted path string.
+        Decoded path string.
     """
-    if path.startswith('"') and path.endswith('"'):
-        path = path[1:-1]
-        # Decode Git's octal escape sequences (e.g. \\303\\251 → bytes)
-        def _replace_octal(m: re.Match) -> str:
-            return chr(int(m.group(1), 8))
+    # Fast path: no backslashes means nothing to decode
+    if "\\" not in path:
+        return path
 
-        path = re.sub(r"\\([0-3][0-7]{2})", _replace_octal, path)
-        # Handle standard C escapes
-        path = path.replace("\\\\", "\\").replace("\\t", "\t").replace("\\n", "\n")
+    # Handle standard C escapes first (use placeholder so \\\\ doesn't
+    # interfere with octal matching)
+    path = path.replace("\\\\", "\x00BACKSLASH\x00")
+    path = path.replace("\\t", "\t").replace("\\n", "\n")
+
+    # Convert octal escapes to raw bytes, then decode as UTF-8.
+    parts: list[str] = []
+    pending_bytes = bytearray()
+    i = 0
+    while i < len(path):
+        m = re.match(r"\\([0-3][0-7]{2})", path[i:])
+        if m:
+            pending_bytes.append(int(m.group(1), 8))
+            i += len(m.group(0))
+        else:
+            if pending_bytes:
+                parts.append(pending_bytes.decode("utf-8", errors="replace"))
+                pending_bytes = bytearray()
+            parts.append(path[i])
+            i += 1
+    if pending_bytes:
+        parts.append(pending_bytes.decode("utf-8", errors="replace"))
+
+    path = "".join(parts)
+    path = path.replace("\x00BACKSLASH\x00", "\\")
     return path
 
 
@@ -113,7 +139,7 @@ def parse_diff_files(diff_text: str) -> List[str]:
     for line in diff_text.splitlines():
         match = _DIFF_HEADER_RE.match(line)
         if match:
-            filepath = _unquote_git_path(match.group(2))
+            filepath = _decode_git_path(match.group(2))
             if filepath not in seen:
                 files.append(filepath)
                 seen.add(filepath)
