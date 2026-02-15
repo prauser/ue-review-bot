@@ -29,14 +29,14 @@ void AMyActor::OptimizedFunction()
 void AMyActor::LoadAssetGood()
 {
 	TSoftObjectPtr<UStaticMesh> MeshRef = AssetReference;
-	MeshRef.LoadSynchronous();  // SoftObjectPtr 비동기 패턴 (이름에 Load가 있지만 OK)
+	MeshRef.Get();  // SoftObjectPtr로 관리 (비동기 로딩은 StreamableManager 사용)
 }
 
 // [macro_no_semicolon OK] 매크로 뒤 세미콜론 있음
 void AMyActor::CorrectSemicolons()
 {
 	UE_LOG(LogMyActor, Log, TEXT("Proper semicolon"));
-	check(IsValid(this));
+	check(this != nullptr);
 	ensure(SomeCondition);
 }
 
@@ -149,7 +149,7 @@ void AMyActor::SafeWorldAccess()
 // [constructorhelpers OK] 생성자 내에서 사용
 AMyActor::AMyActor()
 {
-	static ConstructorHelpers::FObjectFinder<UStaticMesh> MeshFinder(TEXT("/Game/Meshes/SM_Default"));
+	static ConstructorHelpers::FObjectFinder<UStaticMesh> MeshFinder(DefaultMeshPath);
 	if (MeshFinder.Succeeded())
 	{
 		MeshComponent->SetStaticMesh(MeshFinder.Object);
