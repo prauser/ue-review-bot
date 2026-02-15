@@ -1,7 +1,7 @@
 # HANDOFF — UE5 코드리뷰 자동화 시스템 구현 진행상황
 
 > 세션 간 작업 인계를 위한 문서
-> 최종 업데이트: 2026-02-14
+> 최종 업데이트: 2026-02-15
 
 ---
 
@@ -69,7 +69,7 @@
 | `tests/fixtures/sample_diff.patch` | 테스트용 unified diff (10 파일, C++/ThirdParty/binary 혼합) |
 | `scripts/gate_checker.py` | Gate 로직 (대규모 PR 판정 + 파일 필터링) |
 | `scripts/utils/gh_api.py` | GitHub API 유틸리티 (PR 라벨 조회) |
-| `tests/test_gate_checker.py` | Gate Checker 유닛/통합 테스트 (38개) |
+| `tests/test_gate_checker.py` | Gate Checker 유닛/통합 테스트 (50개) |
 | `scripts/__init__.py`, `scripts/utils/__init__.py`, `tests/__init__.py` | 패키지 초기화 |
 
 #### 주요 구현 사항
@@ -77,6 +77,14 @@
 **`gate_checker.py` 2단계 로직:**
 1. **파일 필터:** `gate_config.yml`의 `skip_patterns` + C++ 확장자 필터
 2. **규모 판정:** reviewable 파일 수 > 50 OR 대규모 PR 라벨 → is_large_pr
+
+**Diff 파서 (코드 리뷰 반영):**
+- `+++ b/path` 기반 파싱 (diff --git의 ` b/` 경로 모호성 해소)
+- `Binary files ... and b/path differ` / `rename to path` fallback
+- header/hunk 상태 추적으로 hunk 내부 false positive 방지
+- Git quoted path 지원: octal escape UTF-8 디코딩, `\"` escape
+- non-UTF8 diff 파일 안전 처리 (`errors="replace"`)
+- 빈 YAML config guard
 
 **CLI 인터페이스:**
 ```bash
@@ -87,7 +95,7 @@ python scripts/gate_checker.py \
   --labels migration,large-change
 ```
 
-**테스트 결과:** 38 passed (pytest)
+**테스트 결과:** 50 passed (pytest)
 
 ---
 
@@ -119,7 +127,7 @@ ue5-review-bot/
 │       └── gh_api.py            # GitHub API 유틸리티
 ├── tests/                       # ✅ Step 2 완료
 │   ├── __init__.py
-│   ├── test_gate_checker.py     # Gate Checker 테스트 (38개)
+│   ├── test_gate_checker.py     # Gate Checker 테스트 (50개)
 │   └── fixtures/
 │       ├── sample_bad.cpp       # 규칙 위반 샘플
 │       ├── sample_good.cpp      # 규칙 준수 샘플
