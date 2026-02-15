@@ -97,8 +97,10 @@ def load_tier1_patterns(checklist_path: str) -> List[Dict[str, Any]]:
 def _split_code_comment(line: str) -> tuple:
     """Split a line into code and inline comment parts.
 
-    Tracks parenthesis depth to avoid matching // inside macro
-    arguments (e.g., TEXT("http://...")).
+    Tracks parenthesis depth **and** string/char literal boundaries
+    to avoid matching ``//`` inside macro arguments (e.g.,
+    ``TEXT("http://...")``) or bare string literals (e.g.,
+    ``"http://example.com"``).
 
     Returns:
         (code_part, comment_part) where comment_part includes
@@ -106,15 +108,32 @@ def _split_code_comment(line: str) -> tuple:
         empty string if no inline comment is found.
     """
     depth = 0
+    in_string = False
+    in_char = False
     i = 0
     while i < len(line):
         ch = line[i]
-        if ch == "(":
-            depth += 1
-        elif ch == ")":
-            depth -= 1
-        elif ch == "/" and i + 1 < len(line) and line[i + 1] == "/" and depth <= 0:
-            return line[:i], line[i:]
+        # Skip escaped characters inside string/char literals
+        if ch == "\\" and (in_string or in_char):
+            i += 2
+            continue
+        if in_char:
+            if ch == "'":
+                in_char = False
+        elif in_string:
+            if ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == "'":
+                in_char = True
+            elif ch == "(":
+                depth += 1
+            elif ch == ")":
+                depth -= 1
+            elif ch == "/" and i + 1 < len(line) and line[i + 1] == "/" and depth <= 0:
+                return line[:i], line[i:]
         i += 1
     return line, ""
 

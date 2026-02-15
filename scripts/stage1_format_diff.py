@@ -386,15 +386,21 @@ def main() -> None:
 
     args = parser.parse_args()
 
-    # Check clang-format availability
+    # Check clang-format availability — degrade gracefully when absent
+    # so the rest of the pipeline (pattern checking) is not blocked.
     clang_format_bin = find_clang_format()
     if clang_format_bin is None:
         print(
-            "Error: clang-format not found. Install clang-format to use "
-            "format checking.",
+            "Warning: clang-format not found. Skipping format checking.",
             file=sys.stderr,
         )
-        sys.exit(1)
+        empty_json = json.dumps([], ensure_ascii=False, indent=2)
+        if args.output:
+            Path(args.output).write_text(empty_json + "\n", encoding="utf-8")
+            print("Format suggestions: 0 items (clang-format unavailable).")
+        else:
+            print(empty_json)
+        sys.exit(0)
 
     files = json.loads(args.files)
 

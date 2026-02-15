@@ -729,6 +729,19 @@ class TestCommentHandling:
     def test_empty_line(self):
         assert _strip_comments("") == ""
 
+    def test_strip_preserves_url_in_bare_string(self):
+        """// inside a bare string literal (no macro parens) must NOT be stripped."""
+        line = 'FString Url = "http://example.com";'
+        result = _strip_comments(line)
+        assert "http://example.com" in result
+
+    def test_strip_bare_string_url_then_real_comment(self):
+        """Real comment after a bare string with // should be stripped."""
+        line = 'FString Url = "http://x.com"; // note'
+        result = _strip_comments(line)
+        assert "http://x.com" in result
+        assert "// note" not in result
+
 
 # ============================================================================
 # Suggestion generation tests
@@ -760,6 +773,34 @@ class TestSplitCodeComment:
         code, comment = _split_code_comment(line)
         assert comment == "// note"
         assert "http://x.com" in code
+
+
+    def test_url_in_bare_string_literal(self):
+        """// inside a bare string literal (no parentheses) should not split."""
+        line = 'FString Url = "http://example.com";'
+        code, comment = _split_code_comment(line)
+        assert code == line
+        assert comment == ""
+
+    def test_bare_string_url_then_comment(self):
+        """Real comment after a bare string with // should still split."""
+        line = 'FString Url = "http://x.com"; // note'
+        code, comment = _split_code_comment(line)
+        assert comment == "// note"
+        assert "http://x.com" in code
+
+    def test_char_literal_with_quote(self):
+        """char literal containing double-quote should not confuse parser."""
+        line = "char c = '\"'; // comment"
+        code, comment = _split_code_comment(line)
+        assert comment == "// comment"
+
+    def test_escaped_quote_in_string(self):
+        """Escaped quote inside string literal should not end the string."""
+        line = r'FString s = "say \"hello\""; // comment'
+        code, comment = _split_code_comment(line)
+        assert comment == "// comment"
+        assert r"\"hello\"" in code
 
 
 class TestSuggestionGeneration:

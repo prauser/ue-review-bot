@@ -409,3 +409,36 @@ class TestUtilities:
     def test_find_clang_format_returns_string_or_none(self):
         result = find_clang_format()
         assert result is None or isinstance(result, str)
+
+
+class TestMainGracefulDegradation:
+    """Tests for main() behavior when clang-format is absent."""
+
+    def test_exits_zero_when_clang_format_missing(self, monkeypatch):
+        """main() should exit 0 (not 1) when clang-format is not found."""
+        import scripts.stage1_format_diff as mod
+
+        monkeypatch.setattr(mod, "find_clang_format", lambda: None)
+        monkeypatch.setattr(
+            "sys.argv",
+            ["stage1_format_diff.py", "--files", '["test.cpp"]'],
+        )
+        with pytest.raises(SystemExit) as exc_info:
+            mod.main()
+        assert exc_info.value.code == 0
+
+    def test_outputs_empty_json_when_clang_format_missing(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        """main() should output empty JSON array when clang-format is absent."""
+        import scripts.stage1_format_diff as mod
+
+        monkeypatch.setattr(mod, "find_clang_format", lambda: None)
+        monkeypatch.setattr(
+            "sys.argv",
+            ["stage1_format_diff.py", "--files", '["test.cpp"]'],
+        )
+        with pytest.raises(SystemExit):
+            mod.main()
+        captured = capsys.readouterr()
+        assert "[]" in captured.out
