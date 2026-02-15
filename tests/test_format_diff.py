@@ -67,10 +67,40 @@ class TestComputeDiffRegions:
         assert regions[1]["start_line"] == 5
 
     def test_added_lines(self):
+        """Insert operation should anchor to adjacent line with valid range."""
         original = ["line1\n", "line2\n"]
         formatted = ["line1\n", "inserted\n", "line2\n"]
         regions = _compute_diff_regions(original, formatted)
         assert len(regions) >= 1
+        for region in regions:
+            assert region["start_line"] <= region["end_line"], (
+                f"Invalid range: start_line={region['start_line']} > "
+                f"end_line={region['end_line']}"
+            )
+            assert len(region["original"]) > 0, (
+                "Insert region must have anchored original line"
+            )
+
+    def test_insert_at_beginning(self):
+        """Insertion at the start of the file should anchor to first line."""
+        original = ["existing\n"]
+        formatted = ["inserted\n", "existing\n"]
+        regions = _compute_diff_regions(original, formatted)
+        assert len(regions) >= 1
+        region = regions[0]
+        assert region["start_line"] == 1
+        assert region["end_line"] >= region["start_line"]
+        assert len(region["original"]) > 0
+
+    def test_insert_at_middle(self):
+        """Insertion in the middle should anchor to preceding line."""
+        original = ["line1\n", "line2\n", "line3\n"]
+        formatted = ["line1\n", "line2\n", "new\n", "line3\n"]
+        regions = _compute_diff_regions(original, formatted)
+        assert len(regions) >= 1
+        for region in regions:
+            assert region["start_line"] <= region["end_line"]
+            assert len(region["original"]) > 0
 
     def test_removed_lines(self):
         original = ["line1\n", "extra\n", "line2\n"]

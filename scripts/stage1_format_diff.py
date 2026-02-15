@@ -111,6 +111,36 @@ def _compute_diff_regions(
         if tag == "equal":
             continue
 
+        if tag == "insert":
+            # Pure insertion (i1 == i2): no original lines to replace.
+            # Anchor to an adjacent original line so the suggestion has
+            # a valid line range for GitHub PR review comments.
+            if i1 > 0:
+                # Anchor to the preceding line
+                anchor = i1 - 1
+                regions.append(
+                    {
+                        "start_line": anchor + 1,
+                        "end_line": anchor + 1,
+                        "original": [original_lines[anchor]],
+                        "formatted": [original_lines[anchor]]
+                        + formatted_lines[j1:j2],
+                    }
+                )
+            elif original_lines:
+                # Insertion at the very beginning — anchor to first line
+                regions.append(
+                    {
+                        "start_line": 1,
+                        "end_line": 1,
+                        "original": [original_lines[0]],
+                        "formatted": formatted_lines[j1:j2]
+                        + [original_lines[0]],
+                    }
+                )
+            # else: empty original file — nothing to anchor to, skip
+            continue
+
         regions.append(
             {
                 "start_line": i1 + 1,  # 1-based

@@ -24,6 +24,7 @@ from scripts.stage1_pattern_checker import (
     check_line,
     load_tier1_patterns,
     _generate_suggestion,
+    _split_code_comment,
     _strip_comments,
 )
 from scripts.utils.diff_parser import FileDiff, parse_diff
@@ -692,6 +693,33 @@ class TestCommentHandling:
 # ============================================================================
 
 
+class TestSplitCodeComment:
+    """Tests for _split_code_comment helper."""
+
+    def test_no_comment(self):
+        code, comment = _split_code_comment("\tcheck(x)")
+        assert code == "\tcheck(x)"
+        assert comment == ""
+
+    def test_inline_comment(self):
+        code, comment = _split_code_comment("\tcheck(x) // reason")
+        assert code == "\tcheck(x) "
+        assert comment == "// reason"
+
+    def test_url_inside_macro(self):
+        """// inside parentheses (e.g., URL in TEXT) should not split."""
+        line = '\tUE_LOG(LogTemp, Log, TEXT("http://example.com"))'
+        code, comment = _split_code_comment(line)
+        assert code == line
+        assert comment == ""
+
+    def test_url_inside_then_comment(self):
+        line = '\tUE_LOG(LogTemp, Log, TEXT("http://x.com")) // note'
+        code, comment = _split_code_comment(line)
+        assert comment == "// note"
+        assert "http://x.com" in code
+
+
 class TestSuggestionGeneration:
     """Tests for auto-fix suggestion generation."""
 
@@ -701,11 +729,34 @@ class TestSuggestionGeneration:
         )
         assert suggestion == "\tcheck(IsValid(this));"
 
+    def test_macro_no_semicolon_with_inline_comment(self):
+        """Semicolon should be inserted BEFORE the inline comment."""
+        suggestion = _generate_suggestion(
+            "macro_no_semicolon", "\tcheck(IsValid(this)) // reason"
+        )
+        assert suggestion == "\tcheck(IsValid(this)); // reason"
+
+    def test_macro_no_semicolon_with_url_in_text(self):
+        """// inside TEXT() macro should not be treated as a comment."""
+        suggestion = _generate_suggestion(
+            "macro_no_semicolon",
+            '\tUE_LOG(LogTemp, Log, TEXT("http://example.com"))',
+        )
+        assert suggestion.endswith(';')
+        assert "http://example.com" in suggestion
+
     def test_declaration_macro_semicolon_suggestion(self):
         suggestion = _generate_suggestion(
             "declaration_macro_semicolon", "\tGENERATED_BODY();"
         )
         assert suggestion == "\tGENERATED_BODY()"
+
+    def test_declaration_macro_semicolon_with_comment(self):
+        """Semicolon removed, comment preserved."""
+        suggestion = _generate_suggestion(
+            "declaration_macro_semicolon", "\tGENERATED_BODY(); // required"
+        )
+        assert suggestion == "\tGENERATED_BODY() // required"
 
     def test_no_suggestion_for_other_rules(self):
         suggestion = _generate_suggestion("logtemp", "UE_LOG(LogTemp, ...)")

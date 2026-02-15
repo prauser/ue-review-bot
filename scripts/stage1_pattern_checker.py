@@ -114,6 +114,31 @@ def _strip_comments(line: str) -> str:
     return _INLINE_COMMENT_RE.sub("", line)
 
 
+def _split_code_comment(line: str) -> tuple:
+    """Split a line into code and inline comment parts.
+
+    Tracks parenthesis depth to avoid matching // inside macro
+    arguments (e.g., TEXT("http://...")).
+
+    Returns:
+        (code_part, comment_part) where comment_part includes
+        the leading // and everything after it. comment_part is
+        empty string if no inline comment is found.
+    """
+    depth = 0
+    i = 0
+    while i < len(line):
+        ch = line[i]
+        if ch == "(":
+            depth += 1
+        elif ch == ")":
+            depth -= 1
+        elif ch == "/" and i + 1 < len(line) and line[i + 1] == "/" and depth <= 0:
+            return line[:i], line[i:]
+        i += 1
+    return line, ""
+
+
 def _generate_suggestion(rule_id: str, line: str) -> Optional[str]:
     """Generate auto-fix suggestion for fixable patterns.
 
@@ -125,15 +150,20 @@ def _generate_suggestion(rule_id: str, line: str) -> Optional[str]:
         Suggested replacement line, or None if not auto-fixable.
     """
     if rule_id == "macro_no_semicolon":
-        # Add semicolon at end of line (after trailing whitespace is stripped)
-        stripped = line.rstrip()
-        return stripped + ";"
+        code, comment = _split_code_comment(line)
+        code = code.rstrip()
+        if comment:
+            return code + "; " + comment
+        return code + ";"
 
     if rule_id == "declaration_macro_semicolon":
-        # Remove the trailing semicolon
-        stripped = line.rstrip()
-        if stripped.endswith(";"):
-            return stripped[:-1]
+        code, comment = _split_code_comment(line)
+        code = code.rstrip()
+        if code.endswith(";"):
+            code = code[:-1]
+        if comment:
+            return code + " " + comment
+        return code
 
     return None
 
