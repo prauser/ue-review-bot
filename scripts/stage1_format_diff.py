@@ -354,8 +354,11 @@ def main() -> None:
 
     files = json.loads(args.files)
 
-    # Parse diff to get added line ranges
+    # Parse diff to get added line ranges.
+    # When --diff is not provided, treat ALL lines as in-range so that
+    # format suggestions are still generated (useful for local checks).
     added_lines_map: Dict[str, Set[int]] = {}
+    has_diff = False
     if args.diff:
         diff_path = Path(args.diff)
         if not diff_path.exists():
@@ -368,10 +371,23 @@ def main() -> None:
         diff_data = parse_diff(diff_text)
         for fp in files:
             added_lines_map[fp] = get_added_line_numbers(diff_data, fp)
+        has_diff = True
 
     all_suggestions = []
     for file_path in files:
-        added = added_lines_map.get(file_path, set())
+        if has_diff:
+            added = added_lines_map.get(file_path, set())
+        else:
+            # No diff provided — treat all lines as in-range
+            path = Path(file_path)
+            if path.exists():
+                line_count = len(
+                    path.read_text(encoding="utf-8", errors="replace")
+                    .splitlines()
+                )
+                added = set(range(1, line_count + 1))
+            else:
+                added = set()
         suggestions = process_file(
             file_path,
             added,

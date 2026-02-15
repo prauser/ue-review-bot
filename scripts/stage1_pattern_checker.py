@@ -94,26 +94,6 @@ def load_tier1_patterns(checklist_path: str) -> List[Dict[str, Any]]:
     return patterns
 
 
-def _strip_comments(line: str) -> str:
-    """Remove inline C++ comments from a line for pattern matching.
-
-    Only strips // comments. Block comments (/* */) spanning multiple
-    lines are not handled (would require multi-line state tracking).
-
-    Args:
-        line: Source code line.
-
-    Returns:
-        Line with // comments removed.
-    """
-    # Don't strip if entire line is a comment (return empty to skip matching)
-    if _SINGLE_LINE_COMMENT_RE.match(line):
-        return ""
-
-    # Remove inline comment portion
-    return _INLINE_COMMENT_RE.sub("", line)
-
-
 def _split_code_comment(line: str) -> tuple:
     """Split a line into code and inline comment parts.
 
@@ -137,6 +117,31 @@ def _split_code_comment(line: str) -> tuple:
             return line[:i], line[i:]
         i += 1
     return line, ""
+
+
+def _strip_comments(line: str) -> str:
+    """Remove inline C++ comments from a line for pattern matching.
+
+    Uses parenthesis-depth tracking (via _split_code_comment) so that
+    ``//`` inside macro arguments — e.g. ``TEXT("http://...")`` — is
+    preserved. Only true inline comments at depth <= 0 are stripped.
+
+    Block comments (/* */) spanning multiple lines are not handled
+    (would require multi-line state tracking).
+
+    Args:
+        line: Source code line.
+
+    Returns:
+        Line with // comments removed (code portion only).
+        Empty string if the entire line is a comment.
+    """
+    # Don't strip if entire line is a comment (return empty to skip matching)
+    if _SINGLE_LINE_COMMENT_RE.match(line):
+        return ""
+
+    code, _comment = _split_code_comment(line)
+    return code
 
 
 def _generate_suggestion(rule_id: str, line: str) -> Optional[str]:

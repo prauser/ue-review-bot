@@ -705,6 +705,19 @@ class TestCommentHandling:
     def test_strip_full_line_comment(self):
         assert _strip_comments("  // This is a comment") == ""
 
+    def test_strip_preserves_url_in_macro(self):
+        """// inside macro parentheses (e.g., URL) must NOT be stripped."""
+        line = '\tUE_LOG(LogTemp, Log, TEXT("http://example.com"))'
+        result = _strip_comments(line)
+        assert "http://example.com" in result
+
+    def test_strip_url_in_macro_then_real_comment(self):
+        """Real comment after a macro with URL should still be stripped."""
+        line = '\tUE_LOG(LogTemp, Log, TEXT("http://x.com")) // note'
+        result = _strip_comments(line)
+        assert "http://x.com" in result
+        assert "// note" not in result
+
     def test_strip_inline_comment(self):
         result = _strip_comments("int x = 5; // inline comment")
         assert "int x = 5;" in result
@@ -799,6 +812,14 @@ class TestSuggestionGeneration:
 
 class TestEdgeCases:
     """Tests for edge cases and boundary conditions."""
+
+    def test_url_in_macro_still_detected(self, patterns):
+        """LogTemp in a macro with a URL-like string must still be detected."""
+        line = '\tUE_LOG(LogTemp, Log, TEXT("http://example.com"))'
+        findings = check_line(line, patterns)
+        rule_ids = {f["rule_id"] for f in findings}
+        assert "logtemp" in rule_ids
+        assert "macro_no_semicolon" in rule_ids
 
     def test_empty_diff(self, patterns):
         diff_data = parse_diff("")
