@@ -200,6 +200,35 @@ class TestDiffParser:
         # +++ /dev/null doesn't match +++ b/... so no file should be parsed
         assert len(result) == 0
 
+    def test_deleted_file_after_normal_does_not_corrupt(self):
+        """Deletion after a normal file must not attach hunks to the prior file."""
+        diff = textwrap.dedent("""\
+            diff --git a/Source/Good.cpp b/Source/Good.cpp
+            new file mode 100644
+            --- /dev/null
+            +++ b/Source/Good.cpp
+            @@ -0,0 +1,2 @@
+            +line1
+            +line2
+            diff --git a/Source/Removed.cpp b/Source/Removed.cpp
+            deleted file mode 100644
+            --- a/Source/Removed.cpp
+            +++ /dev/null
+            @@ -1,3 +0,0 @@
+            -old1
+            -old2
+            -old3
+        """)
+        result = parse_diff(diff)
+        # Only Good.cpp should be in the result
+        assert "Source/Good.cpp" in result
+        assert "Source/Removed.cpp" not in result
+        # Good.cpp must have exactly 2 added lines — no contamination
+        good = result["Source/Good.cpp"]
+        assert len(good.added_lines) == 2
+        assert good.added_lines[1] == "line1"
+        assert good.added_lines[2] == "line2"
+
     def test_sample_diff_patch(self):
         """Parse the existing sample_diff.patch fixture."""
         patch = (FIXTURES_DIR / "sample_diff.patch").read_text(encoding="utf-8")

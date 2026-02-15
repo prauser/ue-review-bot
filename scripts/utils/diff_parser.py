@@ -135,6 +135,7 @@ def parse_diff(diff_text: str) -> Dict[str, FileDiff]:
         # --- New file section ---
         if _DIFF_MARKER_RE.match(raw_line):
             _flush_hunk()
+            current_file = None  # Reset so deleted files don't corrupt prior entry
             in_header = True
             in_hunk = False
             continue

@@ -358,11 +358,16 @@ def main() -> None:
     added_lines_map: Dict[str, Set[int]] = {}
     if args.diff:
         diff_path = Path(args.diff)
-        if diff_path.exists():
-            diff_text = diff_path.read_text(encoding="utf-8", errors="replace")
-            diff_data = parse_diff(diff_text)
-            for fp in files:
-                added_lines_map[fp] = get_added_line_numbers(diff_data, fp)
+        if not diff_path.exists():
+            print(
+                f"Error: Diff file not found: {args.diff}",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        diff_text = diff_path.read_text(encoding="utf-8", errors="replace")
+        diff_data = parse_diff(diff_text)
+        for fp in files:
+            added_lines_map[fp] = get_added_line_numbers(diff_data, fp)
 
     all_suggestions = []
     for file_path in files:
