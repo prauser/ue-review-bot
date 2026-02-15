@@ -158,47 +158,91 @@ def _split_into_chunks(
 ) -> List[Dict[str, Any]]:
     """Split a large diff region into chunks of max_lines.
 
+    Enforces the line cap on **both** the original and formatted sides.
+    When clang-format expands a small number of original lines into many
+    formatted lines, the splitting is driven by the formatted side.
+
+    Each chunk must contain at least one original line for a valid GitHub
+    PR suggestion line reference, so the number of chunks is capped at
+    ``len(orig)``.  In rare cases where ``len(orig)`` is very small,
+    individual chunks may exceed *max_lines* on the formatted side.
+
     Args:
         region: A diff region dict.
         max_lines: Maximum lines per chunk.
 
     Returns:
-        List of region dicts, each with at most max_lines of original content.
+        List of region dicts, each with at most max_lines on both sides
+        (when possible).
     """
     orig = region["original"]
     fmt = region["formatted"]
 
-    if len(orig) <= max_lines:
+    if len(orig) <= max_lines and len(fmt) <= max_lines:
         return [region]
 
     chunks = []
-    start = 0
-    fmt_start = 0
 
-    while start < len(orig):
-        end = min(start + max_lines, len(orig))
+    if len(orig) >= len(fmt):
+        # Original is the longer (or equal) side — split greedily by
+        # original lines and proportionally assign formatted lines.
+        start = 0
+        fmt_start = 0
 
-        # Proportionally split formatted lines
-        if len(orig) > 0:
-            fmt_end = int(len(fmt) * end / len(orig))
-        else:
-            fmt_end = len(fmt)
+        while start < len(orig):
+            end = min(start + max_lines, len(orig))
 
-        # Ensure we don't overshoot
-        if end == len(orig):
-            fmt_end = len(fmt)
+            # Proportionally split formatted lines
+            if len(orig) > 0:
+                fmt_end = int(len(fmt) * end / len(orig))
+            else:
+                fmt_end = len(fmt)
 
-        chunks.append(
-            {
-                "start_line": region["start_line"] + start,
-                "end_line": region["start_line"] + end - 1,
-                "original": orig[start:end],
-                "formatted": fmt[fmt_start:fmt_end],
-            }
-        )
+            # Ensure we don't overshoot
+            if end == len(orig):
+                fmt_end = len(fmt)
 
-        start = end
-        fmt_start = fmt_end
+            chunks.append(
+                {
+                    "start_line": region["start_line"] + start,
+                    "end_line": region["start_line"] + end - 1,
+                    "original": orig[start:end],
+                    "formatted": fmt[fmt_start:fmt_end],
+                }
+            )
+
+            start = end
+            fmt_start = fmt_end
+    else:
+        # Formatted is longer — split driven by formatted lines.
+        # Cap the number of chunks at len(orig) so every chunk has at
+        # least one original line for a valid GitHub line reference.
+        n_chunks_by_fmt = (len(fmt) + max_lines - 1) // max_lines
+        n_chunks = min(n_chunks_by_fmt, len(orig)) if orig else 1
+
+        orig_per = len(orig) // n_chunks
+        orig_rem = len(orig) % n_chunks
+        fmt_per = len(fmt) // n_chunks
+        fmt_rem = len(fmt) % n_chunks
+
+        orig_pos = 0
+        fmt_pos = 0
+
+        for i in range(n_chunks):
+            o_size = orig_per + (1 if i < orig_rem else 0)
+            f_size = fmt_per + (1 if i < fmt_rem else 0)
+
+            chunks.append(
+                {
+                    "start_line": region["start_line"] + orig_pos,
+                    "end_line": region["start_line"] + orig_pos + o_size - 1,
+                    "original": orig[orig_pos : orig_pos + o_size],
+                    "formatted": fmt[fmt_pos : fmt_pos + f_size],
+                }
+            )
+
+            orig_pos += o_size
+            fmt_pos += f_size
 
     return chunks
 

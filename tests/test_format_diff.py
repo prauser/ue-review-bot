@@ -189,6 +189,86 @@ class TestSplitIntoChunks:
         total_orig = sum(len(c["original"]) for c in chunks)
         assert total_orig == n
 
+    def test_formatted_exceeds_max_triggers_split(self):
+        """When formatted lines exceed max but original doesn't, still split."""
+        region = {
+            "start_line": 1,
+            "end_line": 5,
+            "original": [f"line{i}\n" for i in range(5)],
+            "formatted": [f"fmt{i}\n" for i in range(50)],
+        }
+        chunks = _split_into_chunks(region, max_lines=20)
+        # Must split — single chunk would have 50 formatted lines
+        assert len(chunks) >= 2
+        # Each chunk must have at least one original line
+        for chunk in chunks:
+            assert len(chunk["original"]) >= 1
+        # All original lines must be covered
+        total_orig = sum(len(c["original"]) for c in chunks)
+        assert total_orig == 5
+        # All formatted lines must be covered
+        total_fmt = sum(len(c["formatted"]) for c in chunks)
+        assert total_fmt == 50
+
+    def test_formatted_exceeds_max_caps_chunk_size(self):
+        """Formatted chunks should not exceed max_lines when possible."""
+        region = {
+            "start_line": 1,
+            "end_line": 10,
+            "original": [f"line{i}\n" for i in range(10)],
+            "formatted": [f"fmt{i}\n" for i in range(60)],
+        }
+        chunks = _split_into_chunks(region, max_lines=20)
+        # With 10 original lines we can have up to 10 chunks,
+        # so 60 formatted lines / 3 chunks = 20 each (within cap)
+        for chunk in chunks:
+            assert len(chunk["formatted"]) <= 20
+
+    def test_formatted_exceeds_with_few_orig_lines(self):
+        """When orig is very small, chunks may exceed max on formatted side."""
+        region = {
+            "start_line": 1,
+            "end_line": 2,
+            "original": [f"line{i}\n" for i in range(2)],
+            "formatted": [f"fmt{i}\n" for i in range(50)],
+        }
+        chunks = _split_into_chunks(region, max_lines=20)
+        # Can only have 2 chunks (one per original line)
+        assert len(chunks) == 2
+        # Each chunk has exactly one original line
+        for chunk in chunks:
+            assert len(chunk["original"]) == 1
+        # All formatted lines covered
+        total_fmt = sum(len(c["formatted"]) for c in chunks)
+        assert total_fmt == 50
+
+    def test_both_sides_within_max_no_split(self):
+        """When both orig and formatted are within max, no split needed."""
+        region = {
+            "start_line": 1,
+            "end_line": 5,
+            "original": [f"line{i}\n" for i in range(5)],
+            "formatted": [f"fmt{i}\n" for i in range(15)],
+        }
+        chunks = _split_into_chunks(region, max_lines=20)
+        assert len(chunks) == 1
+        assert chunks[0] == region
+
+    def test_formatted_split_preserves_line_numbers(self):
+        """Chunks from formatted-driven split should have valid line numbers."""
+        region = {
+            "start_line": 10,
+            "end_line": 14,
+            "original": [f"line{i}\n" for i in range(5)],
+            "formatted": [f"fmt{i}\n" for i in range(50)],
+        }
+        chunks = _split_into_chunks(region, max_lines=20)
+        # Verify line number continuity
+        for chunk in chunks:
+            assert chunk["start_line"] <= chunk["end_line"]
+            assert chunk["start_line"] >= 10
+            assert chunk["end_line"] <= 14
+
 
 # ============================================================================
 # generate_format_suggestions tests
@@ -292,6 +372,30 @@ class TestGenerateFormatSuggestions:
         )
         # Line 2 has spaces where tabs are expected → should generate suggestion
         assert len(result) >= 1
+
+    def test_formatted_expansion_splits_suggestions(self):
+        """When formatted output expands beyond 20 lines, suggestions split.
+
+        Regression test: _split_into_chunks previously only checked
+        len(original) <= max_lines, allowing huge formatted suggestion
+        bodies to pass through unsplit.
+        """
+        # 10 original lines expand to 50 formatted lines
+        n_orig = 10
+        n_fmt = 50
+        original = "".join(f"orig_{i}\n" for i in range(n_orig))
+        formatted = "".join(f"fmt_{i}\n" for i in range(n_fmt))
+        added_lines = set(range(1, n_orig + 1))
+        result = generate_format_suggestions(
+            "test.cpp", original, formatted, added_lines
+        )
+        # Must produce multiple suggestions (not one 50-line block)
+        assert len(result) >= 2
+        # Each suggestion's body should be capped at ~20 lines
+        for s in result:
+            if s["suggestion"] is not None:
+                suggestion_lines = s["suggestion"].split("\n")
+                assert len(suggestion_lines) <= MAX_SUGGESTION_LINES
 
 
 # ============================================================================
