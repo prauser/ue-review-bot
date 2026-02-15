@@ -34,6 +34,11 @@ import yaml
 # Add project root for imports when run as script
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# C++ file extensions eligible for Tier-1 pattern checks.
+# Mirrors gate_checker.CPP_EXTENSIONS to avoid scanning non-C++ files
+# (Markdown, YAML, text, etc.) that may contain false-positive strings.
+_CPP_EXTENSIONS = {".cpp", ".h", ".inl", ".hpp", ".cc", ".cxx", ".hxx"}
+
 from scripts.utils.diff_parser import FileDiff, parse_diff
 
 
@@ -249,6 +254,10 @@ def check_diff(
     all_findings = []
 
     for filepath in sorted(diff_data.keys()):
+        # Only check C++ files — skip Markdown, YAML, text, etc. to
+        # avoid false positives from documentation strings.
+        if Path(filepath).suffix.lower() not in _CPP_EXTENSIONS:
+            continue
         file_diff = diff_data[filepath]
         for line_num in sorted(file_diff.added_lines.keys()):
             line = file_diff.added_lines[line_num]
@@ -269,7 +278,8 @@ def get_diff_from_git(files: List[str], base_ref: str) -> str:
     """Generate diff from git for specified files.
 
     Args:
-        files: List of file paths to diff.
+        files: List of file paths to diff.  When empty, returns an
+            empty string immediately instead of diffing all paths.
         base_ref: Base git ref (e.g., 'origin/main').
 
     Returns:
@@ -278,6 +288,8 @@ def get_diff_from_git(files: List[str], base_ref: str) -> str:
     Raises:
         RuntimeError: If git command fails.
     """
+    if not files:
+        return ""
     cmd = ["git", "diff", base_ref, "--"] + files
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if result.returncode != 0:

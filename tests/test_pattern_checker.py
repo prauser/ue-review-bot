@@ -22,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts.stage1_pattern_checker import (
     check_diff,
     check_line,
+    get_diff_from_git,
     load_tier1_patterns,
     _generate_suggestion,
     _split_code_comment,
@@ -904,3 +905,65 @@ class TestEdgeCases:
         # #pragma pattern looks for lines starting with #, so string content
         # should not match (the # is inside TEXT("..."))
         assert "pragma_optimize_off" not in rule_ids
+
+    def test_non_cpp_file_with_matching_content_skipped(self, patterns):
+        """Non-C++ files with pattern-matching strings must be skipped.
+
+        Regression: check_diff previously had no extension filter, so
+        Markdown docs containing 'LogTemp' or 'check(...)' would trigger
+        false positives.
+        """
+        diff = textwrap.dedent("""\
+            diff --git a/docs/review.md b/docs/review.md
+            new file mode 100644
+            --- /dev/null
+            +++ b/docs/review.md
+            @@ -0,0 +1,3 @@
+            +# Review Notes
+            +Do not use UE_LOG(LogTemp, ...) in production.
+            +Use check(IsValid(ptr)) to assert invariants.
+        """)
+        diff_data = parse_diff(diff)
+        findings = check_diff(diff_data, patterns)
+        assert findings == [], (
+            f"Non-C++ file should produce no findings, got: {findings}"
+        )
+
+    def test_cpp_file_with_matching_content_detected(self, patterns):
+        """C++ files with pattern-matching strings must still be detected."""
+        diff = textwrap.dedent("""\
+            diff --git a/Source/MyActor.cpp b/Source/MyActor.cpp
+            new file mode 100644
+            --- /dev/null
+            +++ b/Source/MyActor.cpp
+            @@ -0,0 +1,1 @@
+            +\tUE_LOG(LogTemp, Warning, TEXT("test"))
+        """)
+        diff_data = parse_diff(diff)
+        findings = check_diff(diff_data, patterns)
+        rule_ids = {f["rule_id"] for f in findings}
+        assert "logtemp" in rule_ids
+
+    def test_yaml_file_excluded(self, patterns):
+        """YAML files with UE macro patterns must not produce findings."""
+        diff = textwrap.dedent("""\
+            diff --git a/configs/checklist.yml b/configs/checklist.yml
+            new file mode 100644
+            --- /dev/null
+            +++ b/configs/checklist.yml
+            @@ -0,0 +1,2 @@
+            +# pattern: UE_LOG(LogTemp
+            +# example: LoadObject<UStaticMesh>(nullptr, TEXT("/Game/Mesh"))
+        """)
+        diff_data = parse_diff(diff)
+        findings = check_diff(diff_data, patterns)
+        assert findings == []
+
+
+class TestGetDiffFromGit:
+    """Tests for get_diff_from_git."""
+
+    def test_empty_files_returns_empty_string(self):
+        """Passing an empty file list should return empty diff immediately."""
+        result = get_diff_from_git([], "origin/main")
+        assert result == ""
