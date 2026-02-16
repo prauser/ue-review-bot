@@ -102,6 +102,25 @@ class TestComputeDiffRegions:
             assert region["start_line"] <= region["end_line"]
             assert len(region["original"]) > 0
 
+    def test_insert_region_has_is_insert_flag(self):
+        """Insert regions should be tagged with is_insert=True."""
+        original = ["line1\n", "line2\n"]
+        formatted = ["line1\n", "inserted\n", "line2\n"]
+        regions = _compute_diff_regions(original, formatted)
+        insert_regions = [r for r in regions if r.get("is_insert")]
+        assert len(insert_regions) >= 1
+        # insert_adj should point to the line after the anchor
+        for r in insert_regions:
+            assert "insert_adj" in r
+
+    def test_replace_region_has_no_insert_flag(self):
+        """Replace regions should NOT have is_insert flag."""
+        original = ["old\n"]
+        formatted = ["new\n"]
+        regions = _compute_diff_regions(original, formatted)
+        assert len(regions) == 1
+        assert not regions[0].get("is_insert", False)
+
     def test_removed_lines(self):
         original = ["line1\n", "extra\n", "line2\n"]
         formatted = ["line1\n", "line2\n"]
@@ -335,6 +354,45 @@ class TestGenerateFormatSuggestions:
         assert len(result) >= 1
         assert result[0]["severity"] == "suggestion"
         assert result[0]["suggestion"] is not None
+
+    def test_insert_adjacent_to_pr_line_surfaces_comment(self):
+        """Insert anchored outside diff but adjacent to PR line → info comment.
+
+        Regression: insert-only regions were silently dropped when the
+        anchor line was outside added_lines, even when the insertion
+        was directly adjacent to PR-touched code.
+        """
+        # Original: line1 (not in diff), line2 (in diff)
+        # Formatted: line1, INSERTED, line2
+        # The insert anchors to line 1, but line 2 is in the diff.
+        original = "line1\nline2\n"
+        formatted = "line1\ninserted\nline2\n"
+        added_lines = {2}  # only line 2 is in the PR diff
+        result = generate_format_suggestions(
+            "test.cpp", original, formatted, added_lines
+        )
+        # Should surface at least an info comment (not silently drop)
+        assert len(result) >= 1
+        info_results = [r for r in result if r["severity"] == "info"]
+        assert len(info_results) >= 1
+
+    def test_insert_not_adjacent_to_pr_line_still_skipped(self):
+        """Insert anchored far from PR lines should remain skipped."""
+        # Original: 4 lines, only line 4 is in diff
+        # Insert after line 1, adjacent to line 2 (not in diff)
+        original = "line1\nline2\nline3\nline4\n"
+        formatted = "line1\ninserted\nline2\nline3\nline4\n"
+        added_lines = {4}  # only line 4 is in the diff
+        result = generate_format_suggestions(
+            "test.cpp", original, formatted, added_lines
+        )
+        # The insert is between lines 1-2, far from line 4 — should be skipped
+        insert_results = [
+            r for r in result
+            if r["severity"] == "info"
+            and "삽입" in r.get("message", "")
+        ]
+        assert len(insert_results) == 0
 
     def test_suggestion_content(self):
         original = "if(x){\n}\n"

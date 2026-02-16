@@ -115,6 +115,8 @@ def _compute_diff_regions(
             # Pure insertion (i1 == i2): no original lines to replace.
             # Anchor to an adjacent original line so the suggestion has
             # a valid line range for GitHub PR review comments.
+            # Mark with is_insert=True so generate_format_suggestions
+            # can use adjacency-based overlap instead of exact overlap.
             if i1 > 0:
                 # Anchor to the preceding line
                 anchor = i1 - 1
@@ -125,6 +127,8 @@ def _compute_diff_regions(
                         "original": [original_lines[anchor]],
                         "formatted": [original_lines[anchor]]
                         + formatted_lines[j1:j2],
+                        "is_insert": True,
+                        "insert_adj": anchor + 2,  # 1-based line after anchor
                     }
                 )
             elif original_lines:
@@ -136,6 +140,8 @@ def _compute_diff_regions(
                         "original": [original_lines[0]],
                         "formatted": formatted_lines[j1:j2]
                         + [original_lines[0]],
+                        "is_insert": True,
+                        "insert_adj": 1,  # the anchor line itself
                     }
                 )
             # else: empty original file — nothing to anchor to, skip
@@ -319,6 +325,26 @@ def generate_format_suggestions(
                         "suggestion": None,
                     }
                 )
+            elif region.get("is_insert"):
+                # Insert-only chunk: the anchor line is outside the PR
+                # diff, but the insertion is adjacent to PR-touched code.
+                # Check if the adjacent line is in the diff range.
+                adj_line = region.get("insert_adj")
+                if adj_line is not None and adj_line in added_lines:
+                    suggestions.append(
+                        {
+                            "file": file_path,
+                            "line": adj_line,
+                            "end_line": adj_line,
+                            "rule_id": "clang_format",
+                            "severity": "info",
+                            "message": (
+                                "clang-format이 PR 변경 라인 근처에 "
+                                "포맷 삽입을 제안합니다."
+                            ),
+                            "suggestion": None,
+                        }
+                    )
             # else: no overlap with diff range — skip silently
 
     return suggestions
