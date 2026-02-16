@@ -102,17 +102,20 @@ def load_tier1_patterns(checklist_path: str) -> List[Dict[str, Any]]:
 def _split_code_comment(line: str) -> tuple:
     """Split a line into code and inline comment parts.
 
-    Tracks parenthesis depth **and** string/char literal boundaries
-    to avoid matching ``//`` inside macro arguments (e.g.,
-    ``TEXT("http://...")``) or bare string literals (e.g.,
-    ``"http://example.com"``).
+    Tracks string/char literal boundaries to avoid matching ``//``
+    inside string literals (e.g., ``TEXT("http://...")``) or bare
+    strings (e.g., ``"http://example.com"``).
+
+    ``//`` is detected as a comment start at any parenthesis depth,
+    since C++ inline comments begin regardless of nesting.  The
+    string/char tracking is sufficient to protect ``//`` inside
+    quoted contexts.
 
     Returns:
         (code_part, comment_part) where comment_part includes
         the leading // and everything after it. comment_part is
         empty string if no inline comment is found.
     """
-    depth = 0
     in_string = False
     in_char = False
     i = 0
@@ -133,11 +136,7 @@ def _split_code_comment(line: str) -> tuple:
                 in_string = True
             elif ch == "'":
                 in_char = True
-            elif ch == "(":
-                depth += 1
-            elif ch == ")":
-                depth -= 1
-            elif ch == "/" and i + 1 < len(line) and line[i + 1] == "/" and depth <= 0:
+            elif ch == "/" and i + 1 < len(line) and line[i + 1] == "/":
                 return line[:i], line[i:]
         i += 1
     return line, ""

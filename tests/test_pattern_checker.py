@@ -797,6 +797,26 @@ class TestSplitCodeComment:
         assert r"\"hello\"" in code
 
 
+    def test_comment_inside_open_paren(self):
+        """// comment on a line with unmatched opening paren should still split.
+
+        Regression: depth <= 0 guard prevented detecting real comments
+        inside parenthesized expressions like multi-line function calls.
+        """
+        line = "\tSomeCall(  // UE_LOG(LogTemp, Warning, TEXT(\"msg\"))"
+        code, comment = _split_code_comment(line)
+        assert comment.startswith("//")
+        assert "UE_LOG" in comment
+        assert code == "\tSomeCall(  "
+
+    def test_comment_after_multiline_macro_start(self):
+        """// comment after an opening paren of a multi-line macro."""
+        line = "\tUE_LOG(  // this is a comment"
+        code, comment = _split_code_comment(line)
+        assert comment == "// this is a comment"
+        assert code == "\tUE_LOG(  "
+
+
 class TestSuggestionGeneration:
     """Tests for auto-fix suggestion generation."""
 
@@ -898,6 +918,18 @@ class TestEdgeCases:
         # #pragma pattern looks for lines starting with #, so string content
         # should not match (the # is inside TEXT("..."))
         assert "pragma_optimize_off" not in rule_ids
+
+    def test_comment_in_multiline_call_not_detected(self, patterns):
+        """LogTemp inside a // comment on a multi-line call must NOT match.
+
+        Regression: depth <= 0 guard prevented comment detection when
+        the line had an unmatched opening paren, so the comment text
+        was left in the code portion and matched regex patterns.
+        """
+        line = "\tSomeCall(  // UE_LOG(LogTemp, Warning, TEXT(\"msg\"))"
+        findings = check_line(line, patterns)
+        rule_ids = {f["rule_id"] for f in findings}
+        assert "logtemp" not in rule_ids
 
     def test_non_cpp_file_with_matching_content_skipped(self, patterns):
         """Non-C++ files with pattern-matching strings must be skipped.

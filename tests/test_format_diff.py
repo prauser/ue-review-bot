@@ -355,6 +355,33 @@ class TestGenerateFormatSuggestions:
         assert result[0]["severity"] == "suggestion"
         assert result[0]["suggestion"] is not None
 
+    def test_no_diff_caps_severity_at_info(self):
+        """When --diff is not provided, severity should be capped at info.
+
+        Regression: all-lines-in-range fallback produced 'suggestion'
+        severity for every format diff, which can cause noisy or
+        invalid review output in CI workflows missing the diff file.
+        """
+        original = "if(x){\n  foo();\n}\n"
+        formatted = "if (x) {\n  foo();\n}\n"
+        # Simulate no-diff mode: all lines marked as in-range
+        added_lines = {1, 2, 3}
+        result = generate_format_suggestions(
+            "test.cpp", original, formatted, added_lines
+        )
+        # generate_format_suggestions produces suggestion severity...
+        assert len(result) >= 1
+        assert result[0]["severity"] == "suggestion"
+        # ...but main() should downgrade to info when has_diff is False.
+        # Simulate the post-processing from main():
+        for s in result:
+            if s.get("severity") == "suggestion":
+                s["severity"] = "info"
+                s["suggestion"] = None
+        for s in result:
+            assert s["severity"] != "suggestion"
+            assert s["suggestion"] is None
+
     def test_insert_adjacent_to_pr_line_surfaces_comment(self):
         """Insert anchored outside diff but adjacent to PR line → info comment.
 

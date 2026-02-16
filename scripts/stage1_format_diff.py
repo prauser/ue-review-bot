@@ -472,6 +472,15 @@ def main() -> None:
         )
         all_suggestions.extend(suggestions)
 
+    # When --diff is not provided we cannot confirm that lines are
+    # PR-touched, so cap severity at "info" to avoid producing
+    # suggestion blocks that could be auto-applied to non-PR code.
+    if not has_diff:
+        for s in all_suggestions:
+            if s.get("severity") == "suggestion":
+                s["severity"] = "info"
+                s["suggestion"] = None
+
     # Output
     output_json = json.dumps(all_suggestions, ensure_ascii=False, indent=2)
 
