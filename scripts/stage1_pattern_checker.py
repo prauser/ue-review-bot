@@ -277,6 +277,11 @@ def check_diff(
 def get_diff_from_git(files: List[str], base_ref: str) -> str:
     """Generate diff from git for specified files.
 
+    Uses merge-base semantics (``base_ref...HEAD``) so that only
+    changes introduced by the current branch are included, not
+    upstream-only changes that appear when ``base_ref`` has moved
+    ahead.
+
     Args:
         files: List of file paths to diff.  When empty, returns an
             empty string immediately instead of diffing all paths.
@@ -290,7 +295,7 @@ def get_diff_from_git(files: List[str], base_ref: str) -> str:
     """
     if not files:
         return ""
-    cmd = ["git", "diff", base_ref, "--"] + files
+    cmd = ["git", "diff", f"{base_ref}...HEAD", "--"] + files
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if result.returncode != 0:
         raise RuntimeError(f"git diff failed: {result.stderr}")

@@ -596,20 +596,13 @@ class TestSampleBadCpp:
         ]
         assert len(sync_findings) >= 1
 
-    def test_all_findings_have_file_field(self, patterns, sample_bad_diff):
-        diff_data = parse_diff(sample_bad_diff)
-        findings = check_diff(diff_data, patterns)
-
-        for f in findings:
-            assert "file" in f
-            assert f["file"] == "Source/sample_bad.cpp"
-
     def test_all_findings_have_required_fields(self, patterns, sample_bad_diff):
         diff_data = parse_diff(sample_bad_diff)
         findings = check_diff(diff_data, patterns)
 
         for f in findings:
             assert "file" in f
+            assert f["file"] == "Source/sample_bad.cpp"
             assert "line" in f
             assert "rule_id" in f
             assert "severity" in f
@@ -967,3 +960,26 @@ class TestGetDiffFromGit:
         """Passing an empty file list should return empty diff immediately."""
         result = get_diff_from_git([], "origin/main")
         assert result == ""
+
+    def test_uses_merge_base_semantics(self, monkeypatch):
+        """git diff should use three-dot (merge-base) syntax.
+
+        Regression: plain ``git diff base_ref -- <files>`` includes
+        upstream-only changes when the PR branch is behind base_ref.
+        ``base_ref...HEAD`` scopes analysis to actual PR changes.
+        """
+        import subprocess
+
+        captured_cmd = []
+        original_run = subprocess.run
+
+        def mock_run(cmd, **kwargs):
+            captured_cmd.extend(cmd)
+            # Return a successful but empty result
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr(subprocess, "run", mock_run)
+        get_diff_from_git(["Source/A.cpp"], "origin/main")
+        # Should use three-dot merge-base syntax
+        assert "origin/main...HEAD" in captured_cmd
+        assert "origin/main" not in captured_cmd  # no bare ref
