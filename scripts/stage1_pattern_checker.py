@@ -276,25 +276,30 @@ def check_diff(
 def get_diff_from_git(files: List[str], base_ref: str) -> str:
     """Generate diff from git for specified files.
 
-    Uses merge-base semantics (``base_ref...HEAD``) so that only
-    changes introduced by the current branch are included, not
-    upstream-only changes that appear when ``base_ref`` has moved
-    ahead.
+    Uses merge-base semantics (``base_ref...HEAD``) and ``-M`` rename
+    detection.  The file pathspec is intentionally **omitted** because
+    ``git diff ... -- <new-path>`` does not resolve renames: a renamed
+    file appears as a full-file addition, inflating ``added_lines`` and
+    causing false positives on unchanged legacy code.  Instead, the
+    full branch diff is generated and callers are expected to filter
+    the parsed result to the requested files.
 
     Args:
         files: List of file paths to diff.  When empty, returns an
             empty string immediately instead of diffing all paths.
+            The list is used only as a non-empty guard; actual file
+            filtering should happen after parsing the returned diff.
         base_ref: Base git ref (e.g., 'origin/main').
 
     Returns:
-        Unified diff text.
+        Unified diff text (may include files not in *files*).
 
     Raises:
         RuntimeError: If git command fails.
     """
     if not files:
         return ""
-    cmd = ["git", "diff", f"{base_ref}...HEAD", "--"] + files
+    cmd = ["git", "diff", "-M", f"{base_ref}...HEAD"]
     result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
     if result.returncode != 0:
         raise RuntimeError(f"git diff failed: {result.stderr}")
@@ -357,6 +362,14 @@ def main() -> None:
 
     # Parse diff and run checks
     diff_data = parse_diff(diff_text)
+
+    # When using --files + --base-ref, the diff is generated without a
+    # file pathspec (to support rename detection), so restrict analysis
+    # to the requested files only.
+    if args.files and args.base_ref:
+        requested_files = set(json.loads(args.files))
+        diff_data = {k: v for k, v in diff_data.items() if k in requested_files}
+
     findings = check_diff(
         diff_data, patterns, skip_comments=not args.no_skip_comments
     )

@@ -993,25 +993,27 @@ class TestGetDiffFromGit:
         result = get_diff_from_git([], "origin/main")
         assert result == ""
 
-    def test_uses_merge_base_semantics(self, monkeypatch):
-        """git diff should use three-dot (merge-base) syntax.
+    def test_uses_merge_base_and_rename_detection(self, monkeypatch):
+        """git diff should use three-dot syntax, -M, and no pathspec.
 
-        Regression: plain ``git diff base_ref -- <files>`` includes
-        upstream-only changes when the PR branch is behind base_ref.
-        ``base_ref...HEAD`` scopes analysis to actual PR changes.
+        Regression: ``git diff base_ref -- <files>`` includes upstream-
+        only changes AND treats renamed files as full additions because
+        the pathspec prevents rename detection.
         """
         import subprocess
 
         captured_cmd = []
-        original_run = subprocess.run
 
         def mock_run(cmd, **kwargs):
             captured_cmd.extend(cmd)
-            # Return a successful but empty result
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
         monkeypatch.setattr(subprocess, "run", mock_run)
         get_diff_from_git(["Source/A.cpp"], "origin/main")
         # Should use three-dot merge-base syntax
         assert "origin/main...HEAD" in captured_cmd
-        assert "origin/main" not in captured_cmd  # no bare ref
+        # Should have -M for rename detection
+        assert "-M" in captured_cmd
+        # Should NOT have pathspec (no "--" separator or file paths)
+        assert "--" not in captured_cmd
+        assert "Source/A.cpp" not in captured_cmd
