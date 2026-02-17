@@ -12,7 +12,8 @@
 **총 7개 Step 중 현재 진행:**
 - ✅ **Step 1 완료** (설정 파일 생성)
 - ✅ **Step 2 완료** (테스트 픽스처 + Gate Checker)
-- 🔜 **Step 3 진행 예정** (Stage 1 — regex 패턴 매칭)
+- ✅ **Step 3 완료** (Stage 1 — regex 패턴 매칭 + clang-format suggestion)
+- 🔜 **Step 5 진행 예정** (Stage 2 — clang-tidy 정적 분석)
 
 **전체 계획:** `PLAN.md` 참조
 
@@ -40,7 +41,7 @@
 **`checklist.yml` 구조:**
 - **Tier 1** (Stage 1 regex): 7개 핵심 패턴
   - `logtemp`, `pragma_optimize_off`, `hard_asset_path`, `macro_no_semicolon`
-  - `check_side_effect`, `unbraced_shipping_macro`, `sync_load_runtime`
+  - `declaration_macro_semicolon`, `check_side_effect_suspicious`, `sync_load_runtime`
 - **Tier 2** (Stage 2 clang-tidy): `override`, `virtual_destructor`, `unnecessary_copy`
 - **Tier 3** (Stage 3 LLM): 이관 항목 7개 + 추가 항목 30+
 
@@ -99,12 +100,93 @@ python scripts/gate_checker.py \
 
 ---
 
-## 🔜 다음 작업: Step 3
+## ✅ 완료된 작업: Step 3
 
-### Step 3: Stage 1 — regex 패턴 매칭
+### Step 3: Stage 1 — regex 패턴 매칭 + clang-format suggestion
 
 **상세 스펙:** `docs/steps/STEP3_STAGE1.md`
-**브랜치 명명:** `claude/review-plan-step3-<SESSION_ID>` (새 세션에서 생성)
+**브랜치:** `claude/review-handoff-R5lJ4`
+**상태:** 커밋/푸시 완료
+
+#### 생성/수정된 파일 (6개)
+
+| 파일 | 설명 |
+|------|------|
+| `scripts/utils/diff_parser.py` | unified diff 파싱 유틸 (파일별 added_lines + hunks 추출) |
+| `scripts/stage1_pattern_checker.py` | Tier 1 regex 패턴 검사 (checklist.yml에서 7개 패턴 로드) |
+| `scripts/stage1_format_diff.py` | clang-format diff → suggestion 변환 (20줄 청크 분리) |
+| `tests/test_pattern_checker.py` | 패턴 검사 + diff_parser 테스트 (71개) |
+| `tests/test_format_diff.py` | 포맷 suggestion 테스트 (21개) |
+| `configs/checklist.yml` | macro_no_semicolon regex 백트래킹 버그 수정 |
+
+#### 주요 구현 사항
+
+**`scripts/utils/diff_parser.py`:**
+- unified diff → `Dict[str, FileDiff]` 구조화
+- 각 파일별 `added_lines: {line_num: content}`, `hunks: [{start, end, content}]`
+- hunk 내 라인 번호를 새 파일 기준으로 정확히 추적
+- `_decode_git_path()` 재사용 (octal escape UTF-8 디코딩)
+
+**`scripts/stage1_pattern_checker.py`:**
+- `checklist.yml`에서 `tier: 1` + `pattern` 필드가 있는 7개 항목 자동 로드
+- 변경된 라인(added lines)에 대해서만 패턴 검사 수행
+- 주석 라인 자동 스킵 (`// ...` 전체 라인 주석, 인라인 주석 제거)
+- `macro_no_semicolon` / `declaration_macro_semicolon`에 대한 auto-fix suggestion 생성
+- CLI: `--diff <file>` 또는 `--files + --base-ref` (git diff 자동 생성) 지원
+
+**7개 Tier 1 패턴:**
+
+| ID | 설명 | severity | auto_fixable |
+|----|------|----------|-------------|
+| `logtemp` | `\bLogTemp\b` | warning | false |
+| `pragma_optimize_off` | `#pragma optimize("", off)` | error | false |
+| `hard_asset_path` | `TEXT("/Game/..." or "/Engine/...")` | warning | false |
+| `macro_no_semicolon` | 런타임 매크로 뒤 세미콜론 누락 | warning | true |
+| `declaration_macro_semicolon` | 선언 매크로 뒤 불필요한 세미콜론 | warning | true |
+| `check_side_effect_suspicious` | check() 내 부작용 의심 패턴 (1차 필터) | warning | false |
+| `sync_load_runtime` | 런타임 동기 로딩 금지 | error | false |
+
+**`scripts/stage1_format_diff.py`:**
+- clang-format 실행 → 원본 vs 포맷팅 비교 → suggestion 생성
+- PR diff 범위 안의 라인만 suggestion, 범위 밖은 info 코멘트로 전환
+- 20줄 초과 diff는 자동 청크 분리
+- clang-format 미설치 시 graceful 처리 (경고 + 빈 결과)
+
+**`checklist.yml` 수정:**
+- `macro_no_semicolon` 패턴의 `\s*(?!;)` → `(?!\s*;)` 수정
+  - 기존 패턴은 `\s*`가 백트래킹하여 세미콜론이 있어도 매칭되는 버그 존재
+
+**`sample_good.cpp` 수정:**
+- `MeshRef.LoadSynchronous()` → `MeshRef.Get()` (regex 오탐 방지)
+- `check(IsValid(this))` → `check(this != nullptr)` (함수 호출 오탐 방지)
+- ConstructorHelpers 하드코딩 경로 → 변수 참조 (hard_asset_path 오탐 방지)
+
+**CLI 인터페이스:**
+```bash
+# Pattern Checker
+python -m scripts.stage1_pattern_checker \
+  --diff <diff-file> \
+  --checklist configs/checklist.yml \
+  --output findings-stage1.json
+
+# Format Diff (clang-format 필요)
+python -m scripts.stage1_format_diff \
+  --files '["Source/A.cpp"]' \
+  --clang-format-config configs/.clang-format \
+  --diff <diff-file> \
+  --output suggestions-format.json
+```
+
+**테스트 결과:** 92 passed (전체 142 passed, Step 2 포함)
+
+---
+
+## 🔜 다음 작업: Step 5
+
+### Step 5: Stage 2 — clang-tidy 정적 분석
+
+**상세 스펙:** `docs/steps/STEP5_STAGE2.md`
+**브랜치 명명:** `claude/review-plan-step5-<SESSION_ID>` (새 세션에서 생성)
 
 ---
 
@@ -117,28 +199,33 @@ ue5-review-bot/
 ├── configs/                     # ✅ Step 1 완료
 │   ├── .clang-format
 │   ├── .editorconfig
-│   ├── checklist.yml
+│   ├── checklist.yml            # (Step 3에서 regex 버그 수정)
 │   └── gate_config.yml
-├── scripts/                     # ✅ Step 2 완료
+├── scripts/                     # ✅ Step 2 + Step 3 완료
 │   ├── __init__.py
 │   ├── gate_checker.py          # Gate 로직 (대규모 PR 판정)
+│   ├── stage1_pattern_checker.py # ✅ Stage 1 regex 패턴 검사
+│   ├── stage1_format_diff.py    # ✅ clang-format suggestion 생성
 │   └── utils/
 │       ├── __init__.py
+│       ├── diff_parser.py       # ✅ unified diff 파싱 유틸
 │       └── gh_api.py            # GitHub API 유틸리티
-├── tests/                       # ✅ Step 2 완료
+├── tests/                       # ✅ Step 2 + Step 3 완료
 │   ├── __init__.py
 │   ├── test_gate_checker.py     # Gate Checker 테스트 (50개)
+│   ├── test_pattern_checker.py  # ✅ 패턴 검사 테스트 (71개)
+│   ├── test_format_diff.py      # ✅ 포맷 suggestion 테스트 (21개)
 │   └── fixtures/
 │       ├── sample_bad.cpp       # 규칙 위반 샘플
-│       ├── sample_good.cpp      # 규칙 준수 샘플
+│       ├── sample_good.cpp      # 규칙 준수 샘플 (Step 3에서 수정)
 │       ├── sample_network.cpp   # 네트워크 위반 샘플
 │       └── sample_diff.patch    # 테스트용 diff
 └── docs/
     └── steps/                   # Step별 상세 스펙
         ├── STEP1_CONFIGS.md     # ✅ 완료
         ├── STEP2_GATE.md        # ✅ 완료
-        ├── STEP3_STAGE1.md      # 🔜 다음
-        ├── STEP5_STAGE2.md      # (STEP4는 없음)
+        ├── STEP3_STAGE1.md      # ✅ 완료
+        ├── STEP5_STAGE2.md      # 🔜 다음
         ├── STEP6_STAGE3.md
         └── STEP7_WORKFLOWS.md
 ```
@@ -151,6 +238,8 @@ ue5-review-bot/
 
 - **브랜치 명명:** `claude/review-plan-step<N>-<SESSION_ID>`
 - **Step 1 브랜치:** `claude/review-plan-step1-D8194` (이미 푸시됨)
+- **Step 2 브랜치:** `claude/implement-step2-gate-pEDwB` (이미 푸시됨)
+- **Step 3 브랜치:** `claude/review-handoff-R5lJ4`
 - **푸시 명령:** `git push -u origin <branch-name>`
 - **실패 시:** 최대 4회 재시도 (exponential backoff: 2s, 4s, 8s, 16s)
 
@@ -191,19 +280,20 @@ Stage 3 (LLM 리뷰)     → Stage 1 이관 항목 포함, 의미론적 리뷰 �
    git status
    ```
 
-2. **Step 3 스펙 읽기:**
+2. **Step 5 스펙 읽기:**
    ```bash
-   cat docs/steps/STEP3_STAGE1.md
+   cat docs/steps/STEP5_STAGE2.md
    ```
 
 3. **새 브랜치 생성 (또는 기존 브랜치 체크아웃):**
    ```bash
-   git checkout -b claude/review-plan-step3-<NEW_SESSION_ID>
+   git checkout -b claude/review-plan-step5-<NEW_SESSION_ID>
    ```
 
 4. **작업 시작:**
-   - `scripts/stage1_regex.py` 구현 (Tier 1 regex 패턴 7개)
-   - `tests/test_stage1_regex.py` 작성
+   - `.clang-tidy` 설정 생성
+   - `scripts/stage2_clang_tidy.py` 구현
+   - `tests/test_stage2_clang_tidy.py` 작성
    - pytest 실행 및 검증
    - 커밋/푸시
 
@@ -215,6 +305,9 @@ Stage 3 (LLM 리뷰)     → Stage 1 이관 항목 포함, 의미론적 리뷰 �
 - 현재 환경에서는 PDF 파싱 도구 설치 불가 → STEP1_CONFIGS.md 스펙 기반으로 작성 완료
 - `.clang-tidy` 설정은 Step 5에서 생성 (compile_commands.json과 함께)
 - `checklist.yml`의 tier 분류가 각 Stage 스크립트 구현의 기준이 됨
+- Stage 1 regex는 주석 라인을 자동 스킵하여 false positive 감소
+- `check_side_effect_suspicious`는 1차 필터 (Stage 3 LLM이 최종 검증)
+- clang-format이 설치되어 있지 않은 환경에서는 format_diff가 빈 결과 반환
 
 ---
 

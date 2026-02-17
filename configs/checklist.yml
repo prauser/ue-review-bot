@@ -137,7 +137,7 @@ categories:
         tier: 1
         severity: warning
         auto_fixable: true
-        pattern: "(UE_LOG|check|checkf|ensure|ensureMsgf|verify|verifyf)\\s*\\((?:[^()]|\\([^()]*\\))*\\)\\s*(?!;)"
+        pattern: "(UE_LOG|check|checkf|ensure|ensureMsgf|verify|verifyf)\\s*\\((?:[^()]|\\([^()]*\\))*\\)(?!\\s*;)"
         rationale: "런타임 매크로는 구문이므로 세미콜론 필수. Stage 1 스펙 준수. 중첩 괄호 지원 (TEXT(...), 함수 호출 등)"
 
       - id: declaration_macro_semicolon
