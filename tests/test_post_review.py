@@ -279,6 +279,72 @@ class TestDeduplicateFindings:
     def test_empty_findings(self):
         assert deduplicate_findings([]) == []
 
+    def test_stage3_category_as_rule_id(self):
+        """Stage 3 findings use 'category' instead of 'rule_id'; dedup should use it."""
+        findings = [
+            {
+                "file": "Source/A.cpp",
+                "line": 10,
+                "severity": "warning",
+                "category": "gc_safety",
+                "message": "UPROPERTY missing",
+            },
+            {
+                "file": "Source/A.cpp",
+                "line": 10,
+                "severity": "error",
+                "category": "network",
+                "message": "Reliable RPC misuse",
+            },
+        ]
+        result = deduplicate_findings(findings)
+        assert len(result) == 2
+        categories = {r.get("category") for r in result}
+        assert categories == {"gc_safety", "network"}
+
+    def test_stage3_same_category_deduped(self):
+        """Same file+line+category across duplicate Stage 3 calls → keep higher severity."""
+        findings = [
+            {
+                "file": "Source/A.cpp",
+                "line": 10,
+                "severity": "warning",
+                "category": "gc_safety",
+                "message": "first",
+            },
+            {
+                "file": "Source/A.cpp",
+                "line": 10,
+                "severity": "error",
+                "category": "gc_safety",
+                "message": "second",
+            },
+        ]
+        result = deduplicate_findings(findings)
+        assert len(result) == 1
+        assert result[0]["severity"] == "error"
+
+    def test_mixed_rule_id_and_category_on_same_line(self):
+        """Stage 1 rule_id + Stage 3 category on same line → both kept."""
+        findings = [
+            {
+                "file": "Source/A.cpp",
+                "line": 10,
+                "severity": "warning",
+                "rule_id": "logtemp",
+                "message": "Stage 1",
+            },
+            {
+                "file": "Source/A.cpp",
+                "line": 10,
+                "severity": "error",
+                "category": "gc_safety",
+                "message": "Stage 3",
+            },
+        ]
+        result = deduplicate_findings(findings)
+        assert len(result) == 2
+
     def test_severity_priority_order(self):
         """error > warning > suggestion > info (same rule_id across stages)."""
         findings = [
@@ -374,6 +440,26 @@ class TestFormatCommentBody:
         body = format_comment_body(finding)
         assert "[ERROR]" in body
         assert "`test`" in body
+
+    def test_stage3_category_shown_as_rule(self):
+        """Stage 3 findings without rule_id use category in the header."""
+        finding = {
+            "severity": "error",
+            "category": "gc_safety",
+            "message": "UPROPERTY missing",
+        }
+        body = format_comment_body(finding)
+        assert "`gc_safety`" in body
+        assert "[ERROR]" in body
+
+    def test_no_rule_id_no_category(self):
+        """Neither rule_id nor category → no backtick label."""
+        finding = {
+            "severity": "warning",
+            "message": "Some generic message",
+        }
+        body = format_comment_body(finding)
+        assert "`" not in body
 
 
 # ---------------------------------------------------------------------------

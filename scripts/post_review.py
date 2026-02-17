@@ -111,7 +111,8 @@ def deduplicate_findings(
     for finding in findings:
         file = finding.get("file", "")
         line = finding.get("line", 0)
-        rule_id = finding.get("rule_id", "")
+        # Stage 1/2 use rule_id; Stage 3 (LLM) uses category instead.
+        rule_id = finding.get("rule_id") or finding.get("category", "")
         key = (file, line, rule_id)
 
         if key not in seen:
@@ -167,12 +168,13 @@ def format_comment_body(finding: Dict[str, Any]) -> str:
     """
     severity = finding.get("severity", "info")
     message = finding.get("message", "")
-    rule_id = finding.get("rule_id", "")
+    # Stage 1/2 use rule_id; Stage 3 (LLM) uses category instead.
+    rule_id = finding.get("rule_id") or finding.get("category", "")
     suggestion = finding.get("suggestion")
 
     parts = []
 
-    # Header line with severity and rule ID
+    # Header line with severity and rule ID / category
     label = _severity_emoji(severity)
     if rule_id:
         parts.append(f"**{label}** `{rule_id}`")
@@ -261,10 +263,10 @@ def build_summary(
         sev = f.get("severity", "info")
         counts[sev] = counts.get(sev, 0) + 1
 
-    # Count by rule_id
+    # Count by rule_id (falls back to category for Stage 3 LLM findings)
     rule_counts: Dict[str, int] = {}
     for f in findings:
-        rid = f.get("rule_id", "unknown")
+        rid = f.get("rule_id") or f.get("category", "unknown")
         rule_counts[rid] = rule_counts.get(rid, 0) + 1
 
     lines = ["## UE5 Code Review Bot", ""]
