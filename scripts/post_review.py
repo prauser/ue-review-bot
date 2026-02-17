@@ -110,7 +110,10 @@ def deduplicate_findings(
 
     for finding in findings:
         file = finding.get("file", "")
-        line = finding.get("line", 0)
+        try:
+            line = int(finding.get("line", 0))
+        except (TypeError, ValueError):
+            line = 0
         # Stage 1/2 use rule_id; Stage 3 (LLM) uses category instead.
         rule_id = finding.get("rule_id") or finding.get("category", "")
         key = (file, line, rule_id)
@@ -213,8 +216,17 @@ def build_review_comments(
 
     for finding in findings:
         file_path = finding.get("file", "")
-        line = finding.get("line", 0)
-        end_line = finding.get("end_line")
+
+        # Coerce line fields to int — Stage 3 LLM JSON may emit
+        # strings, nulls, or other non-int types.
+        try:
+            line = int(finding.get("line", 0))
+        except (TypeError, ValueError):
+            line = 0
+        try:
+            end_line = int(finding["end_line"]) if finding.get("end_line") is not None else None
+        except (TypeError, ValueError):
+            end_line = None
 
         if not file_path or line <= 0:
             continue

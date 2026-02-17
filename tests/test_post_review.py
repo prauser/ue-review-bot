@@ -507,6 +507,42 @@ class TestBuildReviewComments:
         comments = build_review_comments(findings)
         assert len(comments) == 0
 
+    def test_skips_non_int_line_values(self):
+        """Malformed line values (string, null, float) should be skipped, not crash."""
+        findings = [
+            {"file": "A.cpp", "line": None, "severity": "warning", "message": "x"},
+            {"file": "A.cpp", "line": "not a number", "severity": "warning", "message": "x"},
+            {"file": "A.cpp", "line": "", "severity": "warning", "message": "x"},
+        ]
+        comments = build_review_comments(findings)
+        assert len(comments) == 0
+
+    def test_string_int_line_coerced(self):
+        """A line value like '42' (string) should be coerced to int and work."""
+        findings = [
+            {"file": "A.cpp", "line": "42", "severity": "warning", "rule_id": "t", "message": "x"},
+        ]
+        comments = build_review_comments(findings)
+        assert len(comments) == 1
+        assert comments[0]["line"] == 42
+
+    def test_non_int_end_line_ignored(self):
+        """Malformed end_line should fall back to single-line comment."""
+        findings = [
+            {
+                "file": "A.cpp",
+                "line": 10,
+                "end_line": "bad",
+                "severity": "warning",
+                "rule_id": "t",
+                "message": "x",
+            },
+        ]
+        comments = build_review_comments(findings)
+        assert len(comments) == 1
+        assert comments[0]["line"] == 10
+        assert "start_line" not in comments[0]
+
     def test_empty_findings(self):
         assert build_review_comments([]) == []
 
