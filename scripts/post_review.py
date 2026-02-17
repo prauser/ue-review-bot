@@ -335,32 +335,45 @@ def split_into_batches(
 def filter_already_posted(
     comments: List[Dict[str, Any]],
     existing: List[Dict[str, Any]],
+    commit_sha: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Remove comments that already exist on the PR.
 
-    Compares by (path, line) + body prefix to avoid reposting the same
-    inline comment on workflow reruns.  Only the first 120 characters of
-    the body are compared so that minor formatting tweaks don't defeat
-    the dedup.
+    Compares by (path, start_line, line, body_prefix) to avoid reposting
+    the same inline comment on workflow reruns.  Only the first 120
+    characters of the body are compared so that minor formatting tweaks
+    don't defeat the dedup.
+
+    When *commit_sha* is provided, only existing comments whose
+    ``commit_id`` matches the current HEAD are considered duplicates.
+    Comments left on older commits are ignored so that new findings on
+    updated code are never suppressed after a push.
 
     Args:
         comments: New review comment dicts to post.
         existing: Existing review comment dicts from the GitHub API.
+        commit_sha: Current HEAD commit SHA for this review.
 
     Returns:
         Filtered list of comments not yet posted.
     """
-    existing_keys: Set[Tuple[str, int, str]] = set()
+    existing_keys: Set[Tuple[str, Optional[int], int, str]] = set()
     for ec in existing:
+        # Skip comments from older commits — they may reference stale
+        # positions and should not prevent posting on the current HEAD.
+        if commit_sha and ec.get("commit_id") != commit_sha:
+            continue
         path = ec.get("path", "")
         line = ec.get("line") or ec.get("original_line") or 0
+        start_line = ec.get("start_line")  # None for single-line comments
         body_prefix = (ec.get("body") or "")[:120]
-        existing_keys.add((path, line, body_prefix))
+        existing_keys.add((path, start_line, line, body_prefix))
 
     filtered = []
     for c in comments:
         body_prefix = (c.get("body") or "")[:120]
-        key = (c.get("path", ""), c.get("line", 0), body_prefix)
+        start_line = c.get("start_line")  # None for single-line comments
+        key = (c.get("path", ""), start_line, c.get("line", 0), body_prefix)
         if key not in existing_keys:
             filtered.append(c)
 
@@ -408,7 +421,7 @@ def post_review(
     # Filter out comments already posted (workflow rerun protection)
     if existing_comments:
         before = len(comments)
-        comments = filter_already_posted(comments, existing_comments)
+        comments = filter_already_posted(comments, existing_comments, commit_sha)
         skipped = before - len(comments)
         if skipped > 0:
             print(

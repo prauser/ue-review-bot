@@ -749,6 +749,7 @@ class TestPostReview:
                 "path": c["path"],
                 "line": c["line"],
                 "body": c["body"],
+                "commit_id": "abc123",  # same commit as the review
             })
 
         responses = post_review(
@@ -885,6 +886,82 @@ class TestFilterAlreadyPosted:
         result = filter_already_posted(comments, existing)
         assert len(result) == 1
         assert result[0]["body"] == "new"
+
+    def test_old_commit_comments_not_suppressing(self):
+        """Comments from an older commit should NOT suppress new findings."""
+        comments = [
+            {"path": "A.cpp", "line": 10, "body": "same body"},
+        ]
+        existing = [
+            {
+                "path": "A.cpp",
+                "line": 10,
+                "body": "same body",
+                "commit_id": "old_commit_aaa",
+            },
+        ]
+        result = filter_already_posted(comments, existing, commit_sha="new_commit_bbb")
+        assert len(result) == 1  # Not suppressed — different commit
+
+    def test_same_commit_comments_suppressed(self):
+        """Comments from the current commit SHOULD suppress duplicates."""
+        comments = [
+            {"path": "A.cpp", "line": 10, "body": "same body"},
+        ]
+        existing = [
+            {
+                "path": "A.cpp",
+                "line": 10,
+                "body": "same body",
+                "commit_id": "abc123",
+            },
+        ]
+        result = filter_already_posted(comments, existing, commit_sha="abc123")
+        assert len(result) == 0
+
+    def test_no_commit_sha_falls_back_to_all(self):
+        """When commit_sha is None, all existing comments are considered."""
+        comments = [
+            {"path": "A.cpp", "line": 10, "body": "dup"},
+        ]
+        existing = [
+            {"path": "A.cpp", "line": 10, "body": "dup", "commit_id": "whatever"},
+        ]
+        result = filter_already_posted(comments, existing, commit_sha=None)
+        assert len(result) == 0
+
+    def test_start_line_distinguishes_multiline(self):
+        """Different start_line on same end line should not match."""
+        comments = [
+            {"path": "A.cpp", "start_line": 5, "line": 10, "body": "msg"},
+        ]
+        existing = [
+            {"path": "A.cpp", "start_line": 1, "line": 10, "body": "msg"},
+        ]
+        result = filter_already_posted(comments, existing)
+        assert len(result) == 1  # Different start_line → not a duplicate
+
+    def test_single_vs_multiline_not_matched(self):
+        """A single-line comment (no start_line) should not match a multi-line one."""
+        comments = [
+            {"path": "A.cpp", "line": 10, "body": "msg"},
+        ]
+        existing = [
+            {"path": "A.cpp", "start_line": 5, "line": 10, "body": "msg"},
+        ]
+        result = filter_already_posted(comments, existing)
+        assert len(result) == 1  # Single-line vs multi-line → different
+
+    def test_multiline_exact_match_removed(self):
+        """Multi-line comment with matching start_line+line should be filtered."""
+        comments = [
+            {"path": "A.cpp", "start_line": 5, "line": 10, "body": "msg"},
+        ]
+        existing = [
+            {"path": "A.cpp", "start_line": 5, "line": 10, "body": "msg"},
+        ]
+        result = filter_already_posted(comments, existing)
+        assert len(result) == 0
 
 
 # ---------------------------------------------------------------------------
