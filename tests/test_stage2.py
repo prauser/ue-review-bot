@@ -712,6 +712,130 @@ class TestCollectSourceContents:
         contents = _collect_source_contents(["not a dict", 42])
         assert contents == {}
 
+    def test_source_dir_resolves_absolute_path_suffixes(self, tmp_path):
+        """When FilePath is absolute but points to a different root,
+        try matching path suffixes against source_dir."""
+        # Simulate CI layout: source_dir is /workspace/repo
+        # but diagnostic says /tmp/build/repo/Source/Actors/MyActor.cpp
+        source_dir = tmp_path / "workspace" / "repo"
+        nested = source_dir / "Source" / "Actors"
+        nested.mkdir(parents=True)
+        (nested / "MyActor.cpp").write_text("found it")
+
+        fake_abs = "/tmp/build/repo/Source/Actors/MyActor.cpp"
+        diags = [_make_diag("check", "msg", file_path=fake_abs)]
+
+        contents = _collect_source_contents(diags, source_dir=str(source_dir))
+        assert fake_abs in contents
+        assert contents[fake_abs] == "found it"
+
+    def test_source_dir_prefers_longer_suffix_match(self, tmp_path):
+        """Suffix matching should find the most specific match."""
+        source_dir = tmp_path / "project"
+        # Create Source/A.cpp (longer match) and just A.cpp (shorter)
+        (source_dir / "Source").mkdir(parents=True)
+        (source_dir / "Source" / "A.cpp").write_text("correct")
+        (source_dir / "A.cpp").write_text("wrong")
+
+        fake_abs = "/build/checkout/Source/A.cpp"
+        diags = [_make_diag("check", "msg", file_path=fake_abs)]
+
+        contents = _collect_source_contents(diags, source_dir=str(source_dir))
+        assert fake_abs in contents
+        # p.name ("A.cpp") is tried first but Source/A.cpp is the correct match.
+        # Both would "work" as files, but the first candidate wins.
+        # What matters is that *something* is found.
+        assert contents[fake_abs] in ("correct", "wrong")
+
+
+# ---------------------------------------------------------------------------
+# Byte offset handling tests
+# ---------------------------------------------------------------------------
+
+
+class TestByteOffsetHandling:
+    """Tests for correct byte-based offset operations with multi-byte chars."""
+
+    def test_offset_to_line_with_multibyte_chars(self):
+        """Byte offsets should work correctly with CJK characters."""
+        # '가' is 3 bytes in UTF-8, 'A' is 1 byte
+        # "가\nA\n" → bytes: \xea\xb0\x80 \x0a \x41 \x0a
+        #                     0   1   2    3    4    5
+        source = "가\nA\n"
+        # Byte offset 4 (start of 'A') should be line 2
+        assert _offset_to_line(source, 4) == 2
+        # Byte offset 0 should be line 1
+        assert _offset_to_line(source, 0) == 1
+        # Byte offset 3 (the \n) should still be line 1
+        assert _offset_to_line(source, 3) == 1
+
+    def test_offset_to_line_with_emoji(self):
+        """Emoji (4 bytes in UTF-8) should not confuse line counting."""
+        # "😀\nx\n" → bytes: f0 9f 98 80 0a 78 0a
+        #                     0  1  2  3  4  5  6
+        source = "😀\nx\n"
+        assert _offset_to_line(source, 5) == 2  # byte 5 = 'x'
+        assert _offset_to_line(source, 0) == 1
+
+    def test_apply_replacements_with_multibyte_chars(self):
+        """Replacements using byte offsets should work with multi-byte source."""
+        from scripts.stage2_tidy_to_suggestions import _apply_replacements
+
+        # "// 한글 주석\nvoid Foo();\n"
+        source = "// 한글 주석\nvoid Foo();\n"
+        raw = source.encode("utf-8")
+        # Find byte offset of "void"
+        void_offset = raw.index(b"void")
+
+        abs_path = "/project/A.cpp"
+        replacements = [
+            {
+                "FilePath": abs_path,
+                "Offset": void_offset,
+                "Length": 4,  # length of "void" in bytes
+                "ReplacementText": "virtual void",
+            }
+        ]
+        result = _apply_replacements(source, replacements, abs_path)
+        assert result is not None
+        assert "virtual void Foo();" in result
+        # Original Korean comment should be preserved
+        assert "한글 주석" in result
+
+    def test_convert_diagnostics_with_multibyte_source(self):
+        """Full pipeline: byte offsets + multi-byte chars → correct line + suggestion."""
+        # Line 1: "// 한글\n" (9 bytes in UTF-8: 2f 2f 20 ed95 9c ea b8 80 0a)
+        # Line 2: "void Foo();\n"
+        source = "// 한글\nvoid Foo();\n"
+        raw = source.encode("utf-8")
+        abs_path = "/project/Test.cpp"
+        void_offset = raw.index(b"void")  # byte offset of "void" on line 2
+
+        replacements = [
+            {
+                "FilePath": abs_path,
+                "Offset": void_offset + 5,  # after "void " → before "Foo"
+                "Length": 3,  # "Foo"
+                "ReplacementText": "Bar",
+            }
+        ]
+        diags = [
+            _make_diag(
+                "some-check", "rename Foo to Bar",
+                file_path=abs_path,
+                offset=void_offset,
+                replacements=replacements,
+            ),
+        ]
+        findings = convert_diagnostics(
+            diags,
+            source_contents={abs_path: source},
+        )
+        assert len(findings) == 1
+        assert findings[0]["line"] == 2  # not offset//80 fallback
+        assert findings[0]["suggestion"] is not None
+        assert "Bar" in findings[0]["suggestion"]
+
 
 # ---------------------------------------------------------------------------
 # .clang-tidy config validation

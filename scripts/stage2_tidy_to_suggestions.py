@@ -87,8 +87,15 @@ def _resolve_path(file_path: str, build_dir: Optional[str] = None) -> str:
 
 
 def _offset_to_line(content: str, offset: int) -> int:
-    """Convert a byte offset to a 1-based line number."""
-    return content[:offset].count("\n") + 1
+    """Convert a byte offset to a 1-based line number.
+
+    clang-tidy emits byte offsets, so we encode to UTF-8 first to get
+    accurate line numbers when the file contains multi-byte characters.
+    """
+    raw = content.encode("utf-8")
+    # Clamp to valid range
+    offset = min(offset, len(raw))
+    return raw[:offset].count(b"\n") + 1
 
 
 def _apply_replacements(
@@ -97,15 +104,18 @@ def _apply_replacements(
     target_file: str,
 ) -> Optional[str]:
     """Apply clang-tidy replacements to source content and return the
-    modified line at the replacement site.
+    modified text.
 
     Only processes replacements that target *target_file*.  Returns the
-    full replacement text that can be used as a suggestion, or ``None``
-    if no applicable replacements exist.
+    full modified source text, or ``None`` if no applicable replacements.
 
-    For simplicity, when multiple replacements target different offsets
-    we apply them back-to-front (highest offset first) so earlier offsets
-    remain valid.
+    clang-tidy Offset/Length are byte-based, so we operate on the UTF-8
+    encoded bytes and decode back to str afterwards.  This ensures correct
+    behaviour when source files contain multi-byte characters (e.g. CJK
+    comments, Unicode literals).
+
+    When multiple replacements target different offsets we apply them
+    back-to-front (highest offset first) so earlier offsets remain valid.
     """
     applicable = [
         r for r in replacements
@@ -117,14 +127,15 @@ def _apply_replacements(
     # Sort by offset descending for safe in-place replacement
     applicable.sort(key=lambda r: r.get("Offset", 0), reverse=True)
 
-    modified = content
+    # Work in bytes — clang-tidy offsets are byte-based
+    modified = content.encode("utf-8")
     for repl in applicable:
         offset = repl.get("Offset", 0)
         length = repl.get("Length", 0)
-        text = repl.get("ReplacementText", "")
+        text = repl.get("ReplacementText", "").encode("utf-8")
         modified = modified[:offset] + text + modified[offset + length:]
 
-    return modified
+    return modified.decode("utf-8", errors="replace")
 
 
 def _normalise(path: str) -> str:
@@ -334,7 +345,23 @@ def _collect_source_contents(
                 pass
         # Try relative to source_dir
         if source_dir:
-            for candidate in [Path(source_dir) / p.name, Path(source_dir) / p]:
+            sd = Path(source_dir)
+            candidates = [sd / p.name]  # filename only
+            # For absolute paths, try each possible suffix against source_dir.
+            # e.g. /tmp/build/repo/Source/A.cpp → try Source/A.cpp, A.cpp, etc.
+            if p.is_absolute():
+                parts = p.parts[1:]  # drop root '/'
+                for i in range(len(parts)):
+                    candidates.append(sd / Path(*parts[i:]))
+            else:
+                candidates.append(sd / p)
+            # Deduplicate while preserving order
+            seen_candidates: set = set()
+            for candidate in candidates:
+                resolved = str(candidate)
+                if resolved in seen_candidates:
+                    continue
+                seen_candidates.add(resolved)
                 if candidate.is_file():
                     try:
                         contents[file_path] = candidate.read_text(
