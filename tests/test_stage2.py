@@ -755,7 +755,7 @@ class TestCollectSourceContents:
         assert path_map[fake_abs] == "Source/A.cpp"
 
     def test_source_dir_prefers_longer_suffix_match(self, tmp_path):
-        """Suffix matching should find the most specific match."""
+        """Suffix matching should prefer the longest (most specific) match."""
         source_dir = tmp_path / "project"
         # Create Source/A.cpp (longer match) and just A.cpp (shorter)
         (source_dir / "Source").mkdir(parents=True)
@@ -768,9 +768,9 @@ class TestCollectSourceContents:
         contents, path_map = _collect_source_contents(diags, source_dir=str(source_dir))
         assert fake_abs in contents
         assert fake_abs in path_map
-        # Both would "work" as files, but the first candidate wins.
-        # What matters is that *something* is found.
-        assert contents[fake_abs] in ("correct", "wrong")
+        # Longest suffix "Source/A.cpp" should match before "A.cpp"
+        assert contents[fake_abs] == "correct"
+        assert path_map[fake_abs] == "Source/A.cpp"
 
 
 # ---------------------------------------------------------------------------

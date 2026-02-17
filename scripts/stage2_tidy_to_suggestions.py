@@ -419,7 +419,9 @@ def _collect_source_contents(
             sd = Path(source_dir)
             # Build (relative_suffix, candidate_path) pairs so we can record
             # which suffix matched → becomes the repo-relative path.
-            candidates: List[Tuple[str, Path]] = [(p.name, sd / p.name)]
+            # For absolute paths, try longest suffix first so that
+            # Source/A.cpp is preferred over A.cpp when both exist.
+            candidates: List[Tuple[str, Path]] = []
             if p.is_absolute():
                 parts = p.parts[1:]  # drop root '/'
                 for i in range(len(parts)):
@@ -427,6 +429,7 @@ def _collect_source_contents(
                     candidates.append((suffix, sd / suffix))
             else:
                 candidates.append((str(p), sd / p))
+                candidates.append((p.name, sd / p.name))
             # Deduplicate while preserving order
             seen_candidates: set = set()
             for rel_suffix, candidate in candidates:
