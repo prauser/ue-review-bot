@@ -1,0 +1,925 @@
+"""Tests for post_review.py — PR review posting and finding aggregation.
+
+Covers:
+  - Finding loading from multiple JSON files
+  - Deduplication by file+line (higher severity wins)
+  - Comment body formatting with suggestion blocks
+  - Multi-line comment range handling
+  - Review summary generation
+  - Batch splitting for large reviews
+  - Dry-run CLI mode
+  - API posting with mock GitHubClient
+  - Error handling for missing/malformed files
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import textwrap
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.post_review import (
+    MAX_COMMENTS_PER_REVIEW,
+    build_review_comments,
+    build_summary,
+    deduplicate_findings,
+    format_comment_body,
+    load_findings,
+    post_review,
+    split_into_batches,
+)
+from scripts.utils.gh_api import GitHubClient
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+def stage1_findings():
+    """Sample Stage 1 pattern checker findings."""
+    return [
+        {
+            "file": "Source/MyActor.cpp",
+            "line": 42,
+            "rule_id": "logtemp",
+            "severity": "warning",
+            "message": "LogTemp 대신 적절한 로그 카테고리를 사용하세요.",
+            "suggestion": None,
+        },
+        {
+            "file": "Source/MyActor.cpp",
+            "line": 100,
+            "rule_id": "pragma_optimize_off",
+            "severity": "error",
+            "message": "#pragma optimize(\"\", off)는 제거하세요.",
+            "suggestion": None,
+        },
+        {
+            "file": "Source/MyPawn.h",
+            "line": 15,
+            "rule_id": "macro_no_semicolon",
+            "severity": "warning",
+            "message": "매크로 호출 뒤에 세미콜론을 추가하세요.",
+            "suggestion": "\tUE_LOG(LogMyGame, Warning, TEXT(\"test\"));",
+        },
+    ]
+
+
+@pytest.fixture
+def format_findings():
+    """Sample Stage 1 format diff findings."""
+    return [
+        {
+            "file": "Source/MyActor.cpp",
+            "line": 10,
+            "end_line": 12,
+            "rule_id": "clang_format",
+            "severity": "suggestion",
+            "message": "clang-format 자동 수정 제안",
+            "suggestion": "    if (bFlag == false)\n    {\n        DoSomething();\n    }",
+        },
+    ]
+
+
+@pytest.fixture
+def stage2_findings():
+    """Sample Stage 2 clang-tidy findings."""
+    return [
+        {
+            "file": "Source/MyActor.cpp",
+            "line": 55,
+            "rule_id": "modernize-use-override",
+            "severity": "warning",
+            "message": "override 키워드를 추가하세요.",
+            "suggestion": "    virtual void BeginPlay() override;",
+        },
+    ]
+
+
+@pytest.fixture
+def stage3_findings():
+    """Sample Stage 3 LLM findings."""
+    return [
+        {
+            "file": "Source/MyActor.cpp",
+            "line": 80,
+            "end_line": 85,
+            "rule_id": "gc_safety",
+            "severity": "error",
+            "message": "UObject 파생 포인터 멤버에 UPROPERTY가 누락되었습니다.",
+            "suggestion": None,
+        },
+    ]
+
+
+@pytest.fixture
+def tmp_findings_dir(tmp_path):
+    """Create temp directory with sample finding JSON files."""
+
+    def _write(name, data):
+        path = tmp_path / name
+        path.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+        return str(path)
+
+    return _write
+
+
+# ---------------------------------------------------------------------------
+# load_findings
+# ---------------------------------------------------------------------------
+
+
+class TestLoadFindings:
+
+    def test_load_single_file(self, tmp_findings_dir, stage1_findings):
+        path = tmp_findings_dir("stage1.json", stage1_findings)
+        result = load_findings([path])
+        assert len(result) == 3
+        assert result[0]["rule_id"] == "logtemp"
+
+    def test_load_multiple_files(
+        self, tmp_findings_dir, stage1_findings, format_findings
+    ):
+        p1 = tmp_findings_dir("stage1.json", stage1_findings)
+        p2 = tmp_findings_dir("format.json", format_findings)
+        result = load_findings([p1, p2])
+        assert len(result) == 4
+
+    def test_missing_file_skipped(self, tmp_findings_dir, stage1_findings):
+        p1 = tmp_findings_dir("stage1.json", stage1_findings)
+        result = load_findings([p1, "/nonexistent/file.json"])
+        assert len(result) == 3
+
+    def test_empty_array(self, tmp_findings_dir):
+        path = tmp_findings_dir("empty.json", [])
+        result = load_findings([path])
+        assert result == []
+
+    def test_invalid_json(self, tmp_path):
+        path = tmp_path / "bad.json"
+        path.write_text("not valid json{{{", encoding="utf-8")
+        result = load_findings([str(path)])
+        assert result == []
+
+    def test_non_array_json(self, tmp_path):
+        path = tmp_path / "obj.json"
+        path.write_text('{"key": "value"}', encoding="utf-8")
+        result = load_findings([str(path)])
+        assert result == []
+
+    def test_no_files(self):
+        result = load_findings([])
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# deduplicate_findings
+# ---------------------------------------------------------------------------
+
+
+class TestDeduplicateFindings:
+
+    def test_no_duplicates(self, stage1_findings):
+        result = deduplicate_findings(stage1_findings)
+        assert len(result) == 3
+
+    def test_same_file_line_keeps_higher_severity(self):
+        findings = [
+            {
+                "file": "Source/A.cpp",
+                "line": 10,
+                "severity": "warning",
+                "rule_id": "logtemp",
+                "message": "warning msg",
+            },
+            {
+                "file": "Source/A.cpp",
+                "line": 10,
+                "severity": "error",
+                "rule_id": "check_side_effect",
+                "message": "error msg",
+            },
+        ]
+        result = deduplicate_findings(findings)
+        assert len(result) == 1
+        assert result[0]["severity"] == "error"
+
+    def test_same_file_different_lines_kept(self):
+        findings = [
+            {"file": "Source/A.cpp", "line": 10, "severity": "warning"},
+            {"file": "Source/A.cpp", "line": 20, "severity": "warning"},
+        ]
+        result = deduplicate_findings(findings)
+        assert len(result) == 2
+
+    def test_different_files_same_line_kept(self):
+        findings = [
+            {"file": "Source/A.cpp", "line": 10, "severity": "warning"},
+            {"file": "Source/B.cpp", "line": 10, "severity": "warning"},
+        ]
+        result = deduplicate_findings(findings)
+        assert len(result) == 2
+
+    def test_equal_severity_keeps_first(self):
+        findings = [
+            {
+                "file": "Source/A.cpp",
+                "line": 10,
+                "severity": "warning",
+                "rule_id": "first",
+            },
+            {
+                "file": "Source/A.cpp",
+                "line": 10,
+                "severity": "warning",
+                "rule_id": "second",
+            },
+        ]
+        result = deduplicate_findings(findings)
+        assert len(result) == 1
+        assert result[0]["rule_id"] == "first"
+
+    def test_empty_findings(self):
+        assert deduplicate_findings([]) == []
+
+    def test_severity_priority_order(self):
+        """error > warning > suggestion > info."""
+        findings = [
+            {"file": "A.cpp", "line": 1, "severity": "info", "rule_id": "a"},
+            {"file": "A.cpp", "line": 1, "severity": "suggestion", "rule_id": "b"},
+        ]
+        result = deduplicate_findings(findings)
+        assert result[0]["severity"] == "suggestion"
+
+        findings2 = [
+            {"file": "A.cpp", "line": 1, "severity": "suggestion", "rule_id": "a"},
+            {"file": "A.cpp", "line": 1, "severity": "warning", "rule_id": "b"},
+        ]
+        result2 = deduplicate_findings(findings2)
+        assert result2[0]["severity"] == "warning"
+
+
+# ---------------------------------------------------------------------------
+# format_comment_body
+# ---------------------------------------------------------------------------
+
+
+class TestFormatCommentBody:
+
+    def test_warning_without_suggestion(self):
+        finding = {
+            "severity": "warning",
+            "message": "LogTemp 대신 적절한 로그 카테고리를 사용하세요.",
+            "rule_id": "logtemp",
+        }
+        body = format_comment_body(finding)
+        assert "[WARNING]" in body
+        assert "`logtemp`" in body
+        assert "LogTemp" in body
+        assert "```suggestion" not in body
+
+    def test_error_without_suggestion(self):
+        finding = {
+            "severity": "error",
+            "message": "check() 내 부작용 함수 호출이 감지되었습니다.",
+            "rule_id": "check_side_effect",
+        }
+        body = format_comment_body(finding)
+        assert "[ERROR]" in body
+        assert "`check_side_effect`" in body
+
+    def test_with_suggestion_block(self):
+        finding = {
+            "severity": "suggestion",
+            "message": "clang-format 자동 수정 제안",
+            "rule_id": "clang_format",
+            "suggestion": "    if (bFlag)\n    {\n    }",
+        }
+        body = format_comment_body(finding)
+        assert "```suggestion" in body
+        assert "    if (bFlag)" in body
+        assert "```" in body
+
+    def test_warning_with_autofix_suggestion(self):
+        finding = {
+            "severity": "warning",
+            "message": "매크로 호출 뒤에 세미콜론을 추가하세요.",
+            "rule_id": "macro_no_semicolon",
+            "suggestion": "\tUE_LOG(LogMyGame, Warning, TEXT(\"test\"));",
+        }
+        body = format_comment_body(finding)
+        assert "[WARNING]" in body
+        assert "```suggestion" in body
+        assert 'UE_LOG(LogMyGame, Warning, TEXT("test"));' in body
+
+    def test_info_severity(self):
+        finding = {
+            "severity": "info",
+            "message": "Format difference outside PR range.",
+            "rule_id": "clang_format",
+        }
+        body = format_comment_body(finding)
+        assert "[INFO]" in body
+
+    def test_no_rule_id(self):
+        finding = {
+            "severity": "warning",
+            "message": "Some message",
+        }
+        body = format_comment_body(finding)
+        assert "[WARNING]" in body
+        assert "`" not in body  # No backtick-wrapped rule_id
+
+    def test_empty_message(self):
+        finding = {"severity": "error", "rule_id": "test", "message": ""}
+        body = format_comment_body(finding)
+        assert "[ERROR]" in body
+        assert "`test`" in body
+
+
+# ---------------------------------------------------------------------------
+# build_review_comments
+# ---------------------------------------------------------------------------
+
+
+class TestBuildReviewComments:
+
+    def test_single_line_comment(self, stage1_findings):
+        comments = build_review_comments(stage1_findings)
+        assert len(comments) == 3
+
+        logtemp = comments[0]
+        assert logtemp["path"] == "Source/MyActor.cpp"
+        assert logtemp["line"] == 42
+        assert logtemp["side"] == "RIGHT"
+        assert "start_line" not in logtemp
+
+    def test_multi_line_comment(self, stage3_findings):
+        comments = build_review_comments(stage3_findings)
+        assert len(comments) == 1
+
+        comment = comments[0]
+        assert comment["path"] == "Source/MyActor.cpp"
+        assert comment["line"] == 85  # end_line
+        assert comment["start_line"] == 80
+        assert comment["start_side"] == "RIGHT"
+
+    def test_multi_line_format_suggestion(self, format_findings):
+        comments = build_review_comments(format_findings)
+        assert len(comments) == 1
+
+        comment = comments[0]
+        assert comment["line"] == 12  # end_line
+        assert comment["start_line"] == 10
+        assert "```suggestion" in comment["body"]
+
+    def test_skips_invalid_findings(self):
+        findings = [
+            {"file": "", "line": 10, "severity": "warning", "message": "x"},
+            {"file": "A.cpp", "line": 0, "severity": "warning", "message": "x"},
+            {"file": "A.cpp", "line": -1, "severity": "warning", "message": "x"},
+        ]
+        comments = build_review_comments(findings)
+        assert len(comments) == 0
+
+    def test_empty_findings(self):
+        assert build_review_comments([]) == []
+
+    def test_same_start_and_end_line(self):
+        """When end_line == line, no start_line should be set."""
+        findings = [
+            {
+                "file": "A.cpp",
+                "line": 10,
+                "end_line": 10,
+                "severity": "warning",
+                "rule_id": "test",
+                "message": "msg",
+            }
+        ]
+        comments = build_review_comments(findings)
+        assert len(comments) == 1
+        assert comments[0]["line"] == 10
+        assert "start_line" not in comments[0]
+
+
+# ---------------------------------------------------------------------------
+# build_summary
+# ---------------------------------------------------------------------------
+
+
+class TestBuildSummary:
+
+    def test_no_findings(self):
+        summary = build_summary([])
+        assert "No issues found" in summary
+        assert "UE5 Code Review Bot" in summary
+
+    def test_with_findings(self, stage1_findings):
+        summary = build_summary(stage1_findings)
+        assert "3" in summary
+        assert "[ERROR]" in summary
+        assert "[WARNING]" in summary
+        assert "`logtemp`" in summary
+
+    def test_with_stages(self, stage1_findings):
+        summary = build_summary(stage1_findings, ["stage1", "stage2"])
+        assert "stage1" in summary
+        assert "stage2" in summary
+
+    def test_all_severities(self):
+        findings = [
+            {"severity": "error", "rule_id": "a"},
+            {"severity": "warning", "rule_id": "b"},
+            {"severity": "suggestion", "rule_id": "c"},
+            {"severity": "info", "rule_id": "d"},
+        ]
+        summary = build_summary(findings)
+        assert "[ERROR]: 1" in summary
+        assert "[WARNING]: 1" in summary
+        assert "[SUGGESTION]: 1" in summary
+        assert "[INFO]: 1" in summary
+
+    def test_rule_count_summary(self):
+        findings = [
+            {"severity": "warning", "rule_id": "logtemp"},
+            {"severity": "warning", "rule_id": "logtemp"},
+            {"severity": "error", "rule_id": "pragma_optimize_off"},
+        ]
+        summary = build_summary(findings)
+        assert "`logtemp`: 2" in summary
+        assert "`pragma_optimize_off`: 1" in summary
+
+
+# ---------------------------------------------------------------------------
+# split_into_batches
+# ---------------------------------------------------------------------------
+
+
+class TestSplitIntoBatches:
+
+    def test_empty_list(self):
+        assert split_into_batches([]) == []
+
+    def test_under_limit(self):
+        comments = [{"body": f"c{i}"} for i in range(10)]
+        batches = split_into_batches(comments)
+        assert len(batches) == 1
+        assert len(batches[0]) == 10
+
+    def test_exact_limit(self):
+        comments = [{"body": f"c{i}"} for i in range(MAX_COMMENTS_PER_REVIEW)]
+        batches = split_into_batches(comments)
+        assert len(batches) == 1
+
+    def test_over_limit(self):
+        n = MAX_COMMENTS_PER_REVIEW + 10
+        comments = [{"body": f"c{i}"} for i in range(n)]
+        batches = split_into_batches(comments)
+        assert len(batches) == 2
+        assert len(batches[0]) == MAX_COMMENTS_PER_REVIEW
+        assert len(batches[1]) == 10
+
+    def test_custom_batch_size(self):
+        comments = [{"body": f"c{i}"} for i in range(25)]
+        batches = split_into_batches(comments, batch_size=10)
+        assert len(batches) == 3
+        assert len(batches[0]) == 10
+        assert len(batches[1]) == 10
+        assert len(batches[2]) == 5
+
+
+# ---------------------------------------------------------------------------
+# post_review (with mock client)
+# ---------------------------------------------------------------------------
+
+
+class TestPostReview:
+
+    def _make_client(self) -> MagicMock:
+        client = MagicMock(spec=GitHubClient)
+        client.create_review.return_value = {"id": 12345}
+        return client
+
+    def test_post_no_findings(self):
+        client = self._make_client()
+        responses = post_review(
+            client, "owner", "repo", 1, "abc123", [], ["stage1"]
+        )
+        assert len(responses) == 1
+        client.create_review.assert_called_once()
+        call_kwargs = client.create_review.call_args
+        assert call_kwargs[1]["comments"] == []
+        assert "No issues found" in call_kwargs[1]["body"]
+
+    def test_post_with_findings(self, stage1_findings):
+        client = self._make_client()
+        responses = post_review(
+            client, "owner", "repo", 1, "abc123", stage1_findings, ["stage1"]
+        )
+        assert len(responses) == 1
+        call_kwargs = client.create_review.call_args
+        assert len(call_kwargs[1]["comments"]) == 3
+        assert "3" in call_kwargs[1]["body"]
+
+    def test_post_batched(self):
+        """When comments exceed MAX_COMMENTS_PER_REVIEW, multiple reviews."""
+        client = self._make_client()
+        findings = [
+            {
+                "file": f"Source/File{i}.cpp",
+                "line": 10,
+                "severity": "warning",
+                "rule_id": "logtemp",
+                "message": "msg",
+            }
+            for i in range(MAX_COMMENTS_PER_REVIEW + 5)
+        ]
+
+        responses = post_review(
+            client, "owner", "repo", 1, "abc123", findings
+        )
+        assert len(responses) == 2
+        assert client.create_review.call_count == 2
+
+        # First call should have summary
+        first_call = client.create_review.call_args_list[0]
+        assert "UE5 Code Review Bot" in first_call[1]["body"]
+
+        # Second call should have continuation
+        second_call = client.create_review.call_args_list[1]
+        assert "continued" in second_call[1]["body"]
+
+    def test_post_api_error_continues(self, stage1_findings):
+        """API errors on one batch shouldn't stop remaining batches."""
+        client = self._make_client()
+        client.create_review.side_effect = RuntimeError("API error")
+
+        responses = post_review(
+            client, "owner", "repo", 1, "abc123", stage1_findings
+        )
+        assert len(responses) == 1
+        assert "error" in responses[0]
+
+    def test_post_commit_sha_passed(self, stage1_findings):
+        client = self._make_client()
+        post_review(client, "owner", "repo", 42, "deadbeef", stage1_findings)
+        call_kwargs = client.create_review.call_args
+        assert call_kwargs[1]["commit_sha"] == "deadbeef"
+        assert call_kwargs[1]["pr_number"] == 42
+
+    def test_post_event_is_comment(self, stage1_findings):
+        client = self._make_client()
+        post_review(client, "owner", "repo", 1, "abc123", stage1_findings)
+        call_kwargs = client.create_review.call_args
+        assert call_kwargs[1]["event"] == "COMMENT"
+
+
+# ---------------------------------------------------------------------------
+# Integration: load + dedup + build comments
+# ---------------------------------------------------------------------------
+
+
+class TestIntegration:
+
+    def test_full_pipeline(
+        self,
+        tmp_findings_dir,
+        stage1_findings,
+        format_findings,
+        stage2_findings,
+        stage3_findings,
+    ):
+        """Load multiple stage files, dedup, build comments."""
+        p1 = tmp_findings_dir("stage1.json", stage1_findings)
+        p2 = tmp_findings_dir("format.json", format_findings)
+        p3 = tmp_findings_dir("stage2.json", stage2_findings)
+        p4 = tmp_findings_dir("stage3.json", stage3_findings)
+
+        findings = load_findings([p1, p2, p3, p4])
+        assert len(findings) == 6  # 3 + 1 + 1 + 1
+
+        deduped = deduplicate_findings(findings)
+        # All have unique file+line combinations
+        assert len(deduped) == 6
+
+        comments = build_review_comments(deduped)
+        assert len(comments) == 6
+
+        # Verify multi-line comments exist
+        multi_line = [c for c in comments if "start_line" in c]
+        assert len(multi_line) >= 2  # format + stage3
+
+    def test_cross_stage_dedup(self, tmp_findings_dir):
+        """Stage 1 warning and Stage 3 error on same line → keep error."""
+        s1 = [
+            {
+                "file": "Source/A.cpp",
+                "line": 42,
+                "severity": "warning",
+                "rule_id": "logtemp",
+                "message": "Stage 1 warning",
+            }
+        ]
+        s3 = [
+            {
+                "file": "Source/A.cpp",
+                "line": 42,
+                "severity": "error",
+                "rule_id": "gc_safety",
+                "message": "Stage 3 error",
+            }
+        ]
+        p1 = tmp_findings_dir("s1.json", s1)
+        p3 = tmp_findings_dir("s3.json", s3)
+
+        findings = load_findings([p1, p3])
+        deduped = deduplicate_findings(findings)
+        assert len(deduped) == 1
+        assert deduped[0]["severity"] == "error"
+        assert deduped[0]["rule_id"] == "gc_safety"
+
+    def test_suggestion_block_in_comment(self, tmp_findings_dir):
+        """Findings with suggestion produce correct markdown."""
+        findings = [
+            {
+                "file": "Source/A.cpp",
+                "line": 10,
+                "end_line": 12,
+                "severity": "suggestion",
+                "rule_id": "clang_format",
+                "message": "Format fix",
+                "suggestion": "    int x = 0;\n    int y = 1;",
+            }
+        ]
+        p = tmp_findings_dir("fmt.json", findings)
+        loaded = load_findings([p])
+        comments = build_review_comments(loaded)
+        assert len(comments) == 1
+        body = comments[0]["body"]
+        assert "```suggestion\n    int x = 0;\n    int y = 1;\n```" in body
+
+
+# ---------------------------------------------------------------------------
+# GitHubClient unit tests
+# ---------------------------------------------------------------------------
+
+
+class TestGitHubClient:
+
+    def test_init_defaults(self):
+        client = GitHubClient(token="test-token")
+        assert client.api_url == "https://api.github.com"
+        assert client.max_retries == 3
+
+    def test_init_ghes(self):
+        client = GitHubClient(
+            token="test-token",
+            api_url="https://github.company.com/api/v3/",
+        )
+        assert client.api_url == "https://github.company.com/api/v3"
+
+    def test_create_review_payload(self):
+        """Verify the create_review method constructs correct API path."""
+        client = GitHubClient(token="test-token")
+
+        with patch.object(client, "_request") as mock_req:
+            mock_req.return_value = {"id": 1}
+            result = client.create_review(
+                owner="myorg",
+                repo="myrepo",
+                pr_number=42,
+                commit_sha="abc123",
+                body="Summary",
+                comments=[{"path": "A.cpp", "line": 1, "body": "Fix"}],
+            )
+
+            mock_req.assert_called_once_with(
+                "POST",
+                "/repos/myorg/myrepo/pulls/42/reviews",
+                {
+                    "commit_id": "abc123",
+                    "body": "Summary",
+                    "event": "COMMENT",
+                    "comments": [{"path": "A.cpp", "line": 1, "body": "Fix"}],
+                },
+            )
+
+    def test_get_existing_review_comments_path(self):
+        client = GitHubClient(token="test-token")
+
+        with patch.object(client, "_request") as mock_req:
+            mock_req.return_value = []
+            client.get_existing_review_comments("org", "repo", 5)
+            mock_req.assert_called_once_with(
+                "GET", "/repos/org/repo/pulls/5/comments"
+            )
+
+    def test_get_pull_request_path(self):
+        client = GitHubClient(token="test-token")
+
+        with patch.object(client, "_request") as mock_req:
+            mock_req.return_value = {"head": {"sha": "abc"}}
+            result = client.get_pull_request("org", "repo", 10)
+            mock_req.assert_called_once_with(
+                "GET", "/repos/org/repo/pulls/10"
+            )
+            assert result["head"]["sha"] == "abc"
+
+
+# ---------------------------------------------------------------------------
+# CLI dry-run test
+# ---------------------------------------------------------------------------
+
+
+class TestCLIDryRun:
+
+    def test_dry_run_output(self, tmp_path, stage1_findings):
+        """Dry-run mode should write payload to output file."""
+        findings_path = tmp_path / "findings.json"
+        findings_path.write_text(
+            json.dumps(stage1_findings, ensure_ascii=False), encoding="utf-8"
+        )
+        output_path = tmp_path / "result.json"
+
+        from scripts.post_review import main
+
+        with patch(
+            "sys.argv",
+            [
+                "post_review",
+                "--findings",
+                str(findings_path),
+                "--dry-run",
+                "--output",
+                str(output_path),
+            ],
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+
+        assert output_path.exists()
+        result = json.loads(output_path.read_text(encoding="utf-8"))
+        assert result["total_findings"] == 3
+        assert result["total_comments"] == 3
+        assert len(result["comments"]) == 3
+
+    def test_dry_run_with_multiple_files(
+        self, tmp_path, stage1_findings, format_findings
+    ):
+        s1 = tmp_path / "s1.json"
+        s1.write_text(json.dumps(stage1_findings), encoding="utf-8")
+        fmt = tmp_path / "fmt.json"
+        fmt.write_text(json.dumps(format_findings), encoding="utf-8")
+        output_path = tmp_path / "result.json"
+
+        from scripts.post_review import main
+
+        with patch(
+            "sys.argv",
+            [
+                "post_review",
+                "--findings",
+                str(s1),
+                str(fmt),
+                "--dry-run",
+                "--stages",
+                "stage1",
+                "--output",
+                str(output_path),
+            ],
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+
+        result = json.loads(output_path.read_text(encoding="utf-8"))
+        assert result["total_findings"] == 4
+
+    def test_dry_run_missing_findings_file(self, tmp_path):
+        """Missing findings file should not crash in dry-run."""
+        output_path = tmp_path / "result.json"
+
+        from scripts.post_review import main
+
+        with patch(
+            "sys.argv",
+            [
+                "post_review",
+                "--findings",
+                "/nonexistent/file.json",
+                "--dry-run",
+                "--output",
+                str(output_path),
+            ],
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+
+        result = json.loads(output_path.read_text(encoding="utf-8"))
+        assert result["total_findings"] == 0
+
+    def test_dry_run_with_stages_info(self, tmp_path, stage1_findings):
+        s1 = tmp_path / "s1.json"
+        s1.write_text(json.dumps(stage1_findings), encoding="utf-8")
+        output_path = tmp_path / "result.json"
+
+        from scripts.post_review import main
+
+        with patch(
+            "sys.argv",
+            [
+                "post_review",
+                "--findings",
+                str(s1),
+                "--dry-run",
+                "--stages",
+                "stage1,stage2,stage3",
+                "--output",
+                str(output_path),
+            ],
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+
+        result = json.loads(output_path.read_text(encoding="utf-8"))
+        assert "stage1" in result["summary"]
+        assert "stage2" in result["summary"]
+        assert "stage3" in result["summary"]
+
+
+# ---------------------------------------------------------------------------
+# CLI validation tests
+# ---------------------------------------------------------------------------
+
+
+class TestCLIValidation:
+
+    def test_no_pr_number_without_dry_run(self, tmp_path, stage1_findings):
+        """Should exit with error when --pr-number is missing and not --dry-run."""
+        s1 = tmp_path / "s1.json"
+        s1.write_text(json.dumps(stage1_findings), encoding="utf-8")
+
+        from scripts.post_review import main
+
+        with patch(
+            "sys.argv",
+            ["post_review", "--findings", str(s1), "--repo", "org/repo"],
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
+
+    def test_no_repo_without_dry_run(self, tmp_path, stage1_findings):
+        s1 = tmp_path / "s1.json"
+        s1.write_text(json.dumps(stage1_findings), encoding="utf-8")
+
+        from scripts.post_review import main
+
+        with patch(
+            "sys.argv",
+            ["post_review", "--findings", str(s1), "--pr-number", "1"],
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 1
+
+    def test_no_token_without_dry_run(self, tmp_path, stage1_findings):
+        s1 = tmp_path / "s1.json"
+        s1.write_text(json.dumps(stage1_findings), encoding="utf-8")
+
+        from scripts.post_review import main
+
+        env = os.environ.copy()
+        env.pop("GHES_TOKEN", None)
+        env.pop("GITHUB_TOKEN", None)
+
+        with patch.dict(os.environ, env, clear=True):
+            with patch(
+                "sys.argv",
+                [
+                    "post_review",
+                    "--findings",
+                    str(s1),
+                    "--pr-number",
+                    "1",
+                    "--repo",
+                    "org/repo",
+                ],
+            ):
+                with pytest.raises(SystemExit) as exc_info:
+                    main()
+                assert exc_info.value.code == 1
