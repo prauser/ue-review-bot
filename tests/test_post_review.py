@@ -1048,12 +1048,61 @@ class TestGitHubClient:
     def test_get_existing_review_comments_path(self):
         client = GitHubClient(token="test-token")
 
+        with patch.object(client, "_get_all_pages") as mock_pages:
+            mock_pages.return_value = []
+            client.get_existing_review_comments("org", "repo", 5)
+            mock_pages.assert_called_once_with(
+                "/repos/org/repo/pulls/5/comments"
+            )
+
+    def test_get_all_pages_single_page(self):
+        """Single page of results (less than per_page) returns all items."""
+        client = GitHubClient(token="test-token")
+        items = [{"id": i} for i in range(10)]
+
+        with patch.object(client, "_request") as mock_req:
+            mock_req.return_value = items
+            result = client._get_all_pages("/test/path", per_page=100)
+            assert len(result) == 10
+            mock_req.assert_called_once_with(
+                "GET", "/test/path?per_page=100&page=1"
+            )
+
+    def test_get_all_pages_multiple_pages(self):
+        """Multiple pages are fetched until an incomplete page is returned."""
+        client = GitHubClient(token="test-token")
+        page1 = [{"id": i} for i in range(100)]
+        page2 = [{"id": i} for i in range(100, 130)]
+
+        with patch.object(client, "_request") as mock_req:
+            mock_req.side_effect = [page1, page2]
+            result = client._get_all_pages("/test/path", per_page=100)
+            assert len(result) == 130
+            assert mock_req.call_count == 2
+            mock_req.assert_any_call("GET", "/test/path?per_page=100&page=1")
+            mock_req.assert_any_call("GET", "/test/path?per_page=100&page=2")
+
+    def test_get_all_pages_empty_first_page(self):
+        """Empty first page returns empty list."""
+        client = GitHubClient(token="test-token")
+
         with patch.object(client, "_request") as mock_req:
             mock_req.return_value = []
-            client.get_existing_review_comments("org", "repo", 5)
-            mock_req.assert_called_once_with(
-                "GET", "/repos/org/repo/pulls/5/comments"
-            )
+            result = client._get_all_pages("/test/path")
+            assert result == []
+            mock_req.assert_called_once()
+
+    def test_get_all_pages_exact_page_boundary(self):
+        """When a page has exactly per_page items, fetch one more to confirm end."""
+        client = GitHubClient(token="test-token")
+        page1 = [{"id": i} for i in range(100)]
+        page2: list = []
+
+        with patch.object(client, "_request") as mock_req:
+            mock_req.side_effect = [page1, page2]
+            result = client._get_all_pages("/test/path", per_page=100)
+            assert len(result) == 100
+            assert mock_req.call_count == 2
 
     def test_get_pull_request_path(self):
         client = GitHubClient(token="test-token")

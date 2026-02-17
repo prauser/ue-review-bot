@@ -16,7 +16,7 @@ import sys
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 
 def get_pr_labels(pr_number: int) -> List[str]:
@@ -76,7 +76,7 @@ class GitHubClient:
         method: str,
         path: str,
         body: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+    ) -> Union[Dict[str, Any], List[Any]]:
         """Make an authenticated API request with retry on transient errors.
 
         Args:
@@ -85,7 +85,7 @@ class GitHubClient:
             body: Request body (will be JSON-encoded).
 
         Returns:
-            Parsed JSON response.
+            Parsed JSON response (dict or list).
 
         Raises:
             RuntimeError: If the request fails after retries.
@@ -153,6 +153,38 @@ class GitHubClient:
             f"{last_error}"
         )
 
+    def _get_all_pages(
+        self,
+        path: str,
+        per_page: int = 100,
+    ) -> List[Any]:
+        """Fetch all pages of a paginated GET endpoint.
+
+        Uses page-number pagination (``?per_page=N&page=P``) and stops when
+        an empty page is returned.
+
+        Args:
+            path: API path **without** query parameters.
+            per_page: Items per page (max 100 for most GitHub endpoints).
+
+        Returns:
+            Concatenated list of all items across pages.
+        """
+        all_items: List[Any] = []
+        separator = "&" if "?" in path else "?"
+        page = 1
+        while True:
+            paginated_path = f"{path}{separator}per_page={per_page}&page={page}"
+            result = self._request("GET", paginated_path)
+            if not isinstance(result, list) or len(result) == 0:
+                break
+            all_items.extend(result)
+            if len(result) < per_page:
+                # Last page — no more results
+                break
+            page += 1
+        return all_items
+
     def create_review(
         self,
         owner: str,
@@ -206,7 +238,10 @@ class GitHubClient:
         repo: str,
         pr_number: int,
     ) -> List[Dict[str, Any]]:
-        """Fetch existing review comments on a PR to avoid duplicates.
+        """Fetch all existing review comments on a PR to avoid duplicates.
+
+        Paginates through all pages (100 items per page) so that PRs with
+        many comments are fully covered.
 
         API: GET /repos/{owner}/{repo}/pulls/{pull_number}/comments
 
@@ -214,10 +249,7 @@ class GitHubClient:
             List of review comment dicts from the API.
         """
         path = f"/repos/{owner}/{repo}/pulls/{pr_number}/comments"
-        result = self._request("GET", path)
-        if isinstance(result, list):
-            return result
-        return []
+        return self._get_all_pages(path)
 
     def get_pull_request(
         self,
