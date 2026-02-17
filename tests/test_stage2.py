@@ -28,6 +28,7 @@ from scripts.stage2_tidy_to_suggestions import (
     _collect_source_contents,
     _extract_suggestion_span,
     _offset_to_line,
+    _read_source,
     _resolve_path,
     _CHECK_TO_RULE,
     _LEVEL_TO_SEVERITY,
@@ -917,6 +918,75 @@ class TestByteOffsetHandling:
         assert findings[0]["line"] == 2  # not offset//80 fallback
         assert findings[0]["suggestion"] is not None
         assert "Bar" in findings[0]["suggestion"]
+
+
+# ---------------------------------------------------------------------------
+# CRLF handling tests
+# ---------------------------------------------------------------------------
+
+
+class TestCRLFHandling:
+    """Tests for correct CRLF handling in source file reading."""
+
+    def test_read_source_preserves_crlf(self, tmp_path):
+        """_read_source should NOT normalise \\r\\n to \\n."""
+        f = tmp_path / "crlf.cpp"
+        f.write_bytes(b"line1\r\nline2\r\nline3\r\n")
+
+        content = _read_source(f)
+        assert "\r\n" in content
+        assert content == "line1\r\nline2\r\nline3\r\n"
+
+    def test_crlf_byte_offsets_correct(self, tmp_path):
+        """Byte offsets should be correct for CRLF files."""
+        # "line1\r\n" = 7 bytes, "void Foo();\r\n" starts at offset 7
+        source_bytes = b"line1\r\nvoid Foo();\r\n"
+        f = tmp_path / "crlf.cpp"
+        f.write_bytes(source_bytes)
+
+        content = _read_source(f)
+        # _offset_to_line should count \n in the raw bytes
+        assert _offset_to_line(content, 7) == 2  # byte 7 = start of "void"
+        assert _offset_to_line(content, 0) == 1  # byte 0 = line 1
+
+    def test_crlf_replacement_pipeline(self, tmp_path):
+        """Full pipeline: CRLF source → correct byte offsets → correct suggestion."""
+        from scripts.stage2_tidy_to_suggestions import _apply_replacements
+
+        # 2-line CRLF file: "AAA\r\nvoid Foo();\r\n"
+        source_bytes = b"AAA\r\nvoid Foo();\r\n"
+        f = tmp_path / "crlf.cpp"
+        f.write_bytes(source_bytes)
+
+        content = _read_source(f)
+        abs_path = str(f)
+
+        # clang-tidy offset for "void" on line 2: 5 bytes (A A A \r \n v...)
+        void_offset = source_bytes.index(b"void")  # = 5
+
+        replacements = [
+            {
+                "FilePath": abs_path,
+                "Offset": void_offset,
+                "Length": 4,
+                "ReplacementText": "virtual void",
+            }
+        ]
+        result = _apply_replacements(content, replacements, abs_path)
+        assert result is not None
+        assert "virtual void Foo();" in result
+
+    def test_collect_source_contents_preserves_crlf(self, tmp_path):
+        """_collect_source_contents should preserve CRLF in loaded content."""
+        source_file = tmp_path / "crlf.cpp"
+        source_file.write_bytes(b"A\r\nB\r\n")
+
+        abs_path = str(source_file)
+        diags = [_make_diag("check", "msg", file_path=abs_path)]
+
+        contents, _ = _collect_source_contents(diags)
+        assert abs_path in contents
+        assert "\r\n" in contents[abs_path]
 
 
 # ---------------------------------------------------------------------------

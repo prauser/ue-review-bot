@@ -193,6 +193,17 @@ def _join_suggestion(lines: List[str]) -> str:
     return text
 
 
+def _read_source(path: Path) -> str:
+    """Read a source file preserving original line endings.
+
+    Uses ``read_bytes`` + ``decode`` instead of ``read_text`` to avoid
+    platform-dependent ``\\r\\n`` → ``\\n`` translation.  clang-tidy
+    reports byte offsets against the raw file, so normalising CRLF
+    would shift every offset past the first line ending.
+    """
+    return path.read_bytes().decode("utf-8", errors="replace")
+
+
 def _extract_suggestion_span(
     original: str,
     modified: str,
@@ -449,7 +460,7 @@ def _collect_source_contents(
         # Try absolute path first
         if p.is_file():
             try:
-                contents[file_path] = p.read_text(encoding="utf-8", errors="replace")
+                contents[file_path] = _read_source(p)
                 # When source_dir is provided, populate path_map even for
                 # readable absolute paths so findings use repo-relative paths.
                 if source_dir:
@@ -473,9 +484,7 @@ def _collect_source_contents(
                                 if matched.is_file():
                                     path_map[file_path] = suffix
                                     try:
-                                        contents[file_path] = matched.read_text(
-                                            encoding="utf-8", errors="replace"
-                                        )
+                                        contents[file_path] = _read_source(matched)
                                     except OSError:
                                         pass  # keep original content
                                     break
@@ -507,9 +516,7 @@ def _collect_source_contents(
                 seen_candidates.add(resolved)
                 if candidate.is_file():
                     try:
-                        contents[file_path] = candidate.read_text(
-                            encoding="utf-8", errors="replace"
-                        )
+                        contents[file_path] = _read_source(candidate)
                         path_map[file_path] = rel_suffix
                         break
                     except OSError:
