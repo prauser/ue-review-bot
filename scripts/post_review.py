@@ -92,11 +92,13 @@ def load_findings(file_paths: List[str]) -> List[Dict[str, Any]]:
 def deduplicate_findings(
     findings: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """Remove duplicate findings on the same file+line.
+    """Remove duplicate findings on the same file+line+rule_id.
 
-    When multiple stages report the same file+line, keep the one with
-    the highest severity. If severity is equal, keep the first one
-    encountered (earlier stage has priority).
+    Different rules on the same line are kept (e.g., ``logtemp`` and
+    ``macro_no_semicolon`` can both fire on a single ``UE_LOG`` line).
+    Only when multiple stages report the *same* rule on the *same*
+    file+line is the one with the highest severity kept. If severity
+    is equal, the first one encountered (earlier stage) has priority.
 
     Args:
         findings: List of finding dicts.
@@ -104,12 +106,13 @@ def deduplicate_findings(
     Returns:
         Deduplicated list of findings.
     """
-    seen: Dict[Tuple[str, int], Dict[str, Any]] = {}
+    seen: Dict[Tuple[str, int, str], Dict[str, Any]] = {}
 
     for finding in findings:
         file = finding.get("file", "")
         line = finding.get("line", 0)
-        key = (file, line)
+        rule_id = finding.get("rule_id", "")
+        key = (file, line, rule_id)
 
         if key not in seen:
             seen[key] = finding

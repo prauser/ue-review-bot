@@ -193,26 +193,50 @@ class TestDeduplicateFindings:
         result = deduplicate_findings(stage1_findings)
         assert len(result) == 3
 
-    def test_same_file_line_keeps_higher_severity(self):
+    def test_same_file_line_same_rule_keeps_higher_severity(self):
+        """Same file+line+rule_id from different stages: higher severity wins."""
         findings = [
             {
                 "file": "Source/A.cpp",
                 "line": 10,
                 "severity": "warning",
                 "rule_id": "logtemp",
-                "message": "warning msg",
+                "message": "stage1 warning",
             },
             {
                 "file": "Source/A.cpp",
                 "line": 10,
                 "severity": "error",
-                "rule_id": "check_side_effect",
-                "message": "error msg",
+                "rule_id": "logtemp",
+                "message": "stage3 error",
             },
         ]
         result = deduplicate_findings(findings)
         assert len(result) == 1
         assert result[0]["severity"] == "error"
+
+    def test_same_file_line_different_rules_kept(self):
+        """Different rules on the same line must both be kept."""
+        findings = [
+            {
+                "file": "Source/A.cpp",
+                "line": 10,
+                "severity": "warning",
+                "rule_id": "logtemp",
+                "message": "LogTemp warning",
+            },
+            {
+                "file": "Source/A.cpp",
+                "line": 10,
+                "severity": "warning",
+                "rule_id": "macro_no_semicolon",
+                "message": "Missing semicolon",
+            },
+        ]
+        result = deduplicate_findings(findings)
+        assert len(result) == 2
+        rule_ids = {r["rule_id"] for r in result}
+        assert rule_ids == {"logtemp", "macro_no_semicolon"}
 
     def test_same_file_different_lines_kept(self):
         findings = [
@@ -230,42 +254,47 @@ class TestDeduplicateFindings:
         result = deduplicate_findings(findings)
         assert len(result) == 2
 
-    def test_equal_severity_keeps_first(self):
+    def test_equal_severity_same_rule_keeps_first(self):
+        """Same file+line+rule_id with equal severity: first one wins."""
         findings = [
             {
                 "file": "Source/A.cpp",
                 "line": 10,
                 "severity": "warning",
-                "rule_id": "first",
+                "rule_id": "logtemp",
+                "message": "first",
             },
             {
                 "file": "Source/A.cpp",
                 "line": 10,
                 "severity": "warning",
-                "rule_id": "second",
+                "rule_id": "logtemp",
+                "message": "second",
             },
         ]
         result = deduplicate_findings(findings)
         assert len(result) == 1
-        assert result[0]["rule_id"] == "first"
+        assert result[0]["message"] == "first"
 
     def test_empty_findings(self):
         assert deduplicate_findings([]) == []
 
     def test_severity_priority_order(self):
-        """error > warning > suggestion > info."""
+        """error > warning > suggestion > info (same rule_id across stages)."""
         findings = [
-            {"file": "A.cpp", "line": 1, "severity": "info", "rule_id": "a"},
-            {"file": "A.cpp", "line": 1, "severity": "suggestion", "rule_id": "b"},
+            {"file": "A.cpp", "line": 1, "severity": "info", "rule_id": "r1"},
+            {"file": "A.cpp", "line": 1, "severity": "suggestion", "rule_id": "r1"},
         ]
         result = deduplicate_findings(findings)
+        assert len(result) == 1
         assert result[0]["severity"] == "suggestion"
 
         findings2 = [
-            {"file": "A.cpp", "line": 1, "severity": "suggestion", "rule_id": "a"},
-            {"file": "A.cpp", "line": 1, "severity": "warning", "rule_id": "b"},
+            {"file": "A.cpp", "line": 1, "severity": "suggestion", "rule_id": "r2"},
+            {"file": "A.cpp", "line": 1, "severity": "warning", "rule_id": "r2"},
         ]
         result2 = deduplicate_findings(findings2)
+        assert len(result2) == 1
         assert result2[0]["severity"] == "warning"
 
 
@@ -620,8 +649,8 @@ class TestIntegration:
         multi_line = [c for c in comments if "start_line" in c]
         assert len(multi_line) >= 2  # format + stage3
 
-    def test_cross_stage_dedup(self, tmp_findings_dir):
-        """Stage 1 warning and Stage 3 error on same line → keep error."""
+    def test_cross_stage_same_rule_dedup(self, tmp_findings_dir):
+        """Same rule from Stage 1 (warning) and Stage 3 (error) → keep error."""
         s1 = [
             {
                 "file": "Source/A.cpp",
@@ -636,8 +665,8 @@ class TestIntegration:
                 "file": "Source/A.cpp",
                 "line": 42,
                 "severity": "error",
-                "rule_id": "gc_safety",
-                "message": "Stage 3 error",
+                "rule_id": "logtemp",
+                "message": "Stage 3 escalated to error",
             }
         ]
         p1 = tmp_findings_dir("s1.json", s1)
@@ -647,7 +676,35 @@ class TestIntegration:
         deduped = deduplicate_findings(findings)
         assert len(deduped) == 1
         assert deduped[0]["severity"] == "error"
-        assert deduped[0]["rule_id"] == "gc_safety"
+
+    def test_cross_stage_different_rules_kept(self, tmp_findings_dir):
+        """Different rules from different stages on same line → both kept."""
+        s1 = [
+            {
+                "file": "Source/A.cpp",
+                "line": 42,
+                "severity": "warning",
+                "rule_id": "logtemp",
+                "message": "Stage 1 logtemp",
+            }
+        ]
+        s3 = [
+            {
+                "file": "Source/A.cpp",
+                "line": 42,
+                "severity": "error",
+                "rule_id": "gc_safety",
+                "message": "Stage 3 gc_safety",
+            }
+        ]
+        p1 = tmp_findings_dir("s1.json", s1)
+        p3 = tmp_findings_dir("s3.json", s3)
+
+        findings = load_findings([p1, p3])
+        deduped = deduplicate_findings(findings)
+        assert len(deduped) == 2
+        rule_ids = {d["rule_id"] for d in deduped}
+        assert rule_ids == {"logtemp", "gc_safety"}
 
     def test_suggestion_block_in_comment(self, tmp_findings_dir):
         """Findings with suggestion produce correct markdown."""
