@@ -1,7 +1,7 @@
 # HANDOFF — UE5 코드리뷰 자동화 시스템 구현 진행상황
 
 > 세션 간 작업 인계를 위한 문서
-> 최종 업데이트: 2026-02-15
+> 최종 업데이트: 2026-02-17
 
 ---
 
@@ -13,7 +13,8 @@
 - ✅ **Step 1 완료** (설정 파일 생성)
 - ✅ **Step 2 완료** (테스트 픽스처 + Gate Checker)
 - ✅ **Step 3 완료** (Stage 1 — regex 패턴 매칭 + clang-format suggestion)
-- 🔜 **Step 5 진행 예정** (Stage 2 — clang-tidy 정적 분석)
+- ✅ **Step 5 완료** (Stage 2 — clang-tidy 정적 분석)
+- 🔜 **Step 4 진행 예정** (PR 코멘트 게시) 또는 **Step 6** (Stage 3 LLM 리뷰)
 
 **전체 계획:** `PLAN.md` 참조
 
@@ -181,12 +182,64 @@ python -m scripts.stage1_format_diff \
 
 ---
 
-## 🔜 다음 작업: Step 5
+## ✅ 완료된 작업: Step 5
 
 ### Step 5: Stage 2 — clang-tidy 정적 분석
 
 **상세 스펙:** `docs/steps/STEP5_STAGE2.md`
-**브랜치 명명:** `claude/review-plan-step5-<SESSION_ID>` (새 세션에서 생성)
+**브랜치:** `claude/verify-handoff-testing-a5JqI`
+**상태:** 커밋/푸시 완료
+
+#### 생성된 파일 (3개)
+
+| 파일 | 설명 |
+|------|------|
+| `configs/.clang-tidy` | clang-tidy 체크 설정 (9개 체크, Source 헤더 필터) |
+| `scripts/stage2_tidy_to_suggestions.py` | clang-tidy `--export-fixes` YAML → suggestion/comment 변환 |
+| `tests/test_stage2.py` | 변환 로직 테스트 (43개) |
+
+#### 주요 구현 사항
+
+**`configs/.clang-tidy` 설정 (9개 체크):**
+- `modernize-use-override` — override 키워드 누락
+- `cppcoreguidelines-virtual-class-destructor` — virtual 소멸자 누락
+- `bugprone-virtual-near-miss` — 가상 함수 오버라이드 오타
+- `performance-unnecessary-copy-initialization` — 불필요 복사 초기화
+- `performance-for-range-copy` — range-for 루프 복사
+- `clang-analyzer-optin.cplusplus.VirtualCall` — 생성자/소멸자 내 가상 호출
+- `bugprone-division-by-zero` — 0 나누기
+- `readability-else-after-return` — return 후 불필요 else
+- `readability-redundant-smartptr-get` — 불필요 스마트 포인터 `.get()`
+- `HeaderFilterRegex: 'Source/.*'` (Engine 헤더 제외)
+
+**`scripts/stage2_tidy_to_suggestions.py`:**
+- clang-tidy `--export-fixes` YAML 파싱 (`parse_tidy_fixes`)
+- fix 있는 항목 → suggestion 블록 (소스 내용 기반 replacement 적용)
+- fix 없는 항목 → 일반 코멘트
+- Stage 1 결과와 **중복 제거** (같은 file + line → skip)
+- check name → checklist rule_id 매핑 (예: `modernize-use-override` → `override_keyword`)
+- `--pvs-report` 인터페이스 준비 (placeholder, 인자 없으면 clang-tidy만 처리)
+- byte offset → line number 변환 (소스 있으면 정확히, 없으면 추정)
+
+**CLI 인터페이스:**
+```bash
+python -m scripts.stage2_tidy_to_suggestions \
+  --tidy-fixes fixes.yaml \
+  --stage1-results findings-stage1.json \
+  --output findings-stage2.json
+```
+
+**테스트 결과:** 43 passed (전체 224 passed, Step 2+3 포함)
+
+---
+
+## 🔜 다음 작업: Step 4 또는 Step 6
+
+### Step 4: PR 코멘트 게시
+**상세 스펙:** `docs/steps/STEP4_POST_REVIEW.md`
+
+### Step 6: Stage 3 — LLM 리뷰
+**상세 스펙:** `docs/steps/STEP6_STAGE3.md`
 
 ---
 
@@ -196,25 +249,28 @@ python -m scripts.stage1_format_diff \
 ue5-review-bot/
 ├── PLAN.md                      # 전체 계획서
 ├── HANDOFF.md                   # 이 파일
-├── configs/                     # ✅ Step 1 완료
+├── configs/                     # ✅ Step 1 + Step 5 완료
 │   ├── .clang-format
+│   ├── .clang-tidy              # ✅ Step 5 clang-tidy 설정
 │   ├── .editorconfig
 │   ├── checklist.yml            # (Step 3에서 regex 버그 수정)
 │   └── gate_config.yml
-├── scripts/                     # ✅ Step 2 + Step 3 완료
+├── scripts/                     # ✅ Step 2 + Step 3 + Step 5 완료
 │   ├── __init__.py
 │   ├── gate_checker.py          # Gate 로직 (대규모 PR 판정)
 │   ├── stage1_pattern_checker.py # ✅ Stage 1 regex 패턴 검사
 │   ├── stage1_format_diff.py    # ✅ clang-format suggestion 생성
+│   ├── stage2_tidy_to_suggestions.py # ✅ Stage 2 clang-tidy 변환
 │   └── utils/
 │       ├── __init__.py
 │       ├── diff_parser.py       # ✅ unified diff 파싱 유틸
 │       └── gh_api.py            # GitHub API 유틸리티
-├── tests/                       # ✅ Step 2 + Step 3 완료
+├── tests/                       # ✅ Step 2 + Step 3 + Step 5 완료
 │   ├── __init__.py
 │   ├── test_gate_checker.py     # Gate Checker 테스트 (50개)
 │   ├── test_pattern_checker.py  # ✅ 패턴 검사 테스트 (71개)
 │   ├── test_format_diff.py      # ✅ 포맷 suggestion 테스트 (21개)
+│   ├── test_stage2.py           # ✅ Stage 2 변환 테스트 (43개)
 │   └── fixtures/
 │       ├── sample_bad.cpp       # 규칙 위반 샘플
 │       ├── sample_good.cpp      # 규칙 준수 샘플 (Step 3에서 수정)
@@ -280,20 +336,20 @@ Stage 3 (LLM 리뷰)     → Stage 1 이관 항목 포함, 의미론적 리뷰 �
    git status
    ```
 
-2. **Step 5 스펙 읽기:**
+2. **다음 Step 스펙 읽기:**
    ```bash
-   cat docs/steps/STEP5_STAGE2.md
+   cat docs/steps/STEP4_POST_REVIEW.md   # PR 코멘트 게시
+   # 또는
+   cat docs/steps/STEP6_STAGE3.md        # LLM 리뷰
    ```
 
-3. **새 브랜치 생성 (또는 기존 브랜치 체크아웃):**
+3. **새 브랜치 생성:**
    ```bash
-   git checkout -b claude/review-plan-step5-<NEW_SESSION_ID>
+   git checkout -b claude/review-plan-step<N>-<NEW_SESSION_ID>
    ```
 
 4. **작업 시작:**
-   - `.clang-tidy` 설정 생성
-   - `scripts/stage2_clang_tidy.py` 구현
-   - `tests/test_stage2_clang_tidy.py` 작성
+   - 해당 Step 스펙에 따라 구현
    - pytest 실행 및 검증
    - 커밋/푸시
 

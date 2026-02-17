@@ -1,0 +1,354 @@
+#!/usr/bin/env python3
+"""Stage 2 — clang-tidy fixes YAML → suggestion/comment converter.
+
+Parses the YAML output of ``clang-tidy --export-fixes`` and converts each
+diagnostic into a finding dict compatible with Stage 1 output format.
+
+* Diagnostics with a replacement fix → suggestion block
+* Diagnostics without a fix → regular comment
+* Deduplicates against Stage 1 results (same file + line → skip)
+
+Usage:
+    python -m scripts.stage2_tidy_to_suggestions \\
+        --tidy-fixes fixes.yaml \\
+        --stage1-results findings-stage1.json \\
+        --output findings-stage2.json
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+import yaml
+
+# ---------------------------------------------------------------------------
+# clang-tidy --export-fixes YAML schema (abbreviated):
+#
+#   MainSourceFile: /path/to/source.cpp
+#   Diagnostics:
+#     - DiagnosticName: modernize-use-override
+#       DiagnosticMessage:
+#         Message: "annotate this function with 'override'..."
+#         FilePath: /path/to/source.cpp
+#         FileOffset: 1234
+#         Replacements:
+#           - FilePath: /path/to/source.cpp
+#             Offset: 1234
+#             Length: 0
+#             ReplacementText: ' override'
+#       Level: Warning
+#       BuildDirectory: /path/to/build
+#
+# When there are no replacements the Replacements key may be absent or [].
+# ---------------------------------------------------------------------------
+
+# Mapping from clang-tidy check names to checklist.yml rule_ids.
+# Diagnostics not in this map use the clang-tidy check name as rule_id.
+_CHECK_TO_RULE: Dict[str, str] = {
+    "modernize-use-override": "override_keyword",
+    "cppcoreguidelines-virtual-class-destructor": "virtual_destructor",
+    "performance-for-range-copy": "unnecessary_copy",
+    "performance-unnecessary-copy-initialization": "unnecessary_copy",
+}
+
+# Severity mapping: clang-tidy Level → output severity.
+# clang-tidy levels: Error, Warning, Note, Remark
+_LEVEL_TO_SEVERITY: Dict[str, str] = {
+    "Error": "error",
+    "Warning": "warning",
+    "Note": "info",
+    "Remark": "info",
+}
+
+
+def _resolve_path(file_path: str, build_dir: Optional[str] = None) -> str:
+    """Normalise an absolute file path to a relative project path.
+
+    clang-tidy emits absolute paths in the YAML.  We strip common build
+    directory prefixes and return a forward-slash relative path suitable
+    for matching against diff file paths.
+    """
+    p = Path(file_path)
+    # Try to make relative to build_dir first, then to cwd
+    if build_dir:
+        try:
+            return str(p.relative_to(build_dir))
+        except ValueError:
+            pass
+    try:
+        return str(p.relative_to(Path.cwd()))
+    except ValueError:
+        # Already relative or unresolvable — return as-is
+        return str(p)
+
+
+def _offset_to_line(content: str, offset: int) -> int:
+    """Convert a byte offset to a 1-based line number."""
+    return content[:offset].count("\n") + 1
+
+
+def _apply_replacements(
+    content: str,
+    replacements: List[Dict[str, Any]],
+    target_file: str,
+) -> Optional[str]:
+    """Apply clang-tidy replacements to source content and return the
+    modified line at the replacement site.
+
+    Only processes replacements that target *target_file*.  Returns the
+    full replacement text that can be used as a suggestion, or ``None``
+    if no applicable replacements exist.
+
+    For simplicity, when multiple replacements target different offsets
+    we apply them back-to-front (highest offset first) so earlier offsets
+    remain valid.
+    """
+    applicable = [
+        r for r in replacements
+        if _normalise(r.get("FilePath", "")) == _normalise(target_file)
+    ]
+    if not applicable:
+        return None
+
+    # Sort by offset descending for safe in-place replacement
+    applicable.sort(key=lambda r: r.get("Offset", 0), reverse=True)
+
+    modified = content
+    for repl in applicable:
+        offset = repl.get("Offset", 0)
+        length = repl.get("Length", 0)
+        text = repl.get("ReplacementText", "")
+        modified = modified[:offset] + text + modified[offset + length:]
+
+    return modified
+
+
+def _normalise(path: str) -> str:
+    """Normalise a path for comparison (resolve, lower on Windows)."""
+    try:
+        return str(Path(path).resolve())
+    except (OSError, ValueError):
+        return path
+
+
+def parse_tidy_fixes(
+    fixes_path: str,
+) -> List[Dict[str, Any]]:
+    """Parse a clang-tidy ``--export-fixes`` YAML file.
+
+    Args:
+        fixes_path: Path to the fixes YAML file.
+
+    Returns:
+        List of raw diagnostic dicts extracted from the YAML.
+        Empty list if the file is missing, empty, or invalid.
+    """
+    path = Path(fixes_path)
+    if not path.exists():
+        return []
+
+    text = path.read_text(encoding="utf-8", errors="replace")
+    if not text.strip():
+        return []
+
+    try:
+        data = yaml.safe_load(text)
+    except yaml.YAMLError:
+        return []
+
+    if not isinstance(data, dict):
+        return []
+
+    return data.get("Diagnostics", []) or []
+
+
+def convert_diagnostics(
+    diagnostics: List[Dict[str, Any]],
+    source_contents: Optional[Dict[str, str]] = None,
+    build_dir: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Convert clang-tidy diagnostics to Stage-compatible findings.
+
+    Args:
+        diagnostics: Raw diagnostics from parse_tidy_fixes().
+        source_contents: Optional mapping of absolute file paths to their
+            contents.  Required for generating line numbers from byte
+            offsets and for producing suggestion text.  When absent,
+            offset-to-line conversion falls back to offset // 80.
+        build_dir: Optional build directory for path resolution.
+
+    Returns:
+        List of finding dicts with file, line, rule_id, severity,
+        message, and optional suggestion.
+    """
+    findings: List[Dict[str, Any]] = []
+
+    for diag in diagnostics:
+        if not isinstance(diag, dict):
+            continue
+
+        check_name = diag.get("DiagnosticName", "")
+        msg_info = diag.get("DiagnosticMessage", {})
+        if not isinstance(msg_info, dict):
+            continue
+
+        message = msg_info.get("Message", "")
+        file_path = msg_info.get("FilePath", "")
+        file_offset = msg_info.get("FileOffset", 0)
+        replacements = msg_info.get("Replacements") or []
+
+        # Resolve level → severity
+        level = diag.get("Level", "Warning")
+        severity = _LEVEL_TO_SEVERITY.get(level, "warning")
+
+        # Resolve file path
+        rel_path = _resolve_path(file_path, build_dir)
+
+        # Compute line number
+        if source_contents and file_path in source_contents:
+            line_num = _offset_to_line(source_contents[file_path], file_offset)
+        elif source_contents:
+            # Try with resolved path
+            for src_path, content in source_contents.items():
+                if _normalise(src_path) == _normalise(file_path):
+                    line_num = _offset_to_line(content, file_offset)
+                    break
+            else:
+                # Rough estimate: ~80 chars per line
+                line_num = max(1, file_offset // 80 + 1)
+        else:
+            line_num = max(1, file_offset // 80 + 1)
+
+        # Map check name to rule_id
+        rule_id = _CHECK_TO_RULE.get(check_name, check_name)
+
+        # Generate suggestion from replacements if available
+        suggestion = None
+        if replacements and source_contents:
+            abs_path = file_path
+            content = source_contents.get(abs_path)
+            if content is None:
+                for src_path, src_content in source_contents.items():
+                    if _normalise(src_path) == _normalise(abs_path):
+                        content = src_content
+                        break
+
+            if content is not None:
+                modified = _apply_replacements(content, replacements, abs_path)
+                if modified is not None and modified != content:
+                    # Extract the modified line(s) at the replacement site
+                    mod_lines = modified.splitlines()
+                    if 0 < line_num <= len(mod_lines):
+                        suggestion = mod_lines[line_num - 1]
+
+        finding: Dict[str, Any] = {
+            "file": rel_path,
+            "line": line_num,
+            "rule_id": rule_id,
+            "severity": severity,
+            "message": message,
+            "suggestion": suggestion,
+        }
+        findings.append(finding)
+
+    return findings
+
+
+def deduplicate(
+    stage2_findings: List[Dict[str, Any]],
+    stage1_findings: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Remove Stage 2 findings that overlap with Stage 1.
+
+    A Stage 2 finding is considered a duplicate if Stage 1 already has
+    a finding on the same file + line.
+
+    Args:
+        stage2_findings: Findings from Stage 2 (this module).
+        stage1_findings: Findings from Stage 1 (pattern checker).
+
+    Returns:
+        Filtered Stage 2 findings with duplicates removed.
+    """
+    stage1_keys: Set[Tuple[str, int]] = set()
+    for f in stage1_findings:
+        stage1_keys.add((f.get("file", ""), f.get("line", 0)))
+
+    return [
+        f for f in stage2_findings
+        if (f.get("file", ""), f.get("line", 0)) not in stage1_keys
+    ]
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(
+        description="Stage 2 — clang-tidy fixes → suggestion converter"
+    )
+    parser.add_argument(
+        "--tidy-fixes",
+        required=True,
+        help="Path to clang-tidy --export-fixes YAML file",
+    )
+    parser.add_argument(
+        "--stage1-results",
+        default=None,
+        help="Path to Stage 1 findings JSON (for deduplication)",
+    )
+    parser.add_argument(
+        "--pvs-report",
+        default=None,
+        help="Path to PVS-Studio report JSON (placeholder — not yet implemented)",
+    )
+    parser.add_argument(
+        "--output",
+        default=None,
+        help="Output JSON file path (default: stdout)",
+    )
+
+    args = parser.parse_args()
+
+    # PVS-Studio placeholder
+    if args.pvs_report:
+        print(
+            "Warning: --pvs-report is not yet implemented. Ignoring.",
+            file=sys.stderr,
+        )
+
+    # Parse clang-tidy fixes
+    diagnostics = parse_tidy_fixes(args.tidy_fixes)
+    findings = convert_diagnostics(diagnostics)
+
+    # Deduplicate against Stage 1
+    if args.stage1_results:
+        s1_path = Path(args.stage1_results)
+        if s1_path.exists():
+            stage1 = json.loads(s1_path.read_text(encoding="utf-8"))
+            findings = deduplicate(findings, stage1)
+        else:
+            print(
+                f"Warning: Stage 1 results not found: {args.stage1_results}",
+                file=sys.stderr,
+            )
+
+    # Output
+    output_json = json.dumps(findings, ensure_ascii=False, indent=2)
+
+    if args.output:
+        output_path = Path(args.output)
+        output_path.write_text(output_json + "\n", encoding="utf-8")
+        print(
+            f"Stage 2 findings: {len(findings)} issues found. "
+            f"Written to: {args.output}"
+        )
+    else:
+        print(output_json)
+
+    sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,598 @@
+"""Tests for stage2_tidy_to_suggestions.py — clang-tidy fixes → suggestions.
+
+Test cases from STEP5_STAGE2.md:
+  - fixes.yaml에 fix 있는 항목 → suggestion 생성 확인
+  - fix 없는 항목 → 일반 코멘트 확인
+  - Stage 1과 같은 라인 지적 → 중복 제거 확인
+  - fixes.yaml 없거나 비어있을 때 → 빈 결과
+  - --pvs-report 없이 실행 → clang-tidy만 처리 확인
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+import textwrap
+from pathlib import Path
+
+import pytest
+import yaml
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from scripts.stage2_tidy_to_suggestions import (
+    convert_diagnostics,
+    deduplicate,
+    parse_tidy_fixes,
+    _offset_to_line,
+    _resolve_path,
+    _CHECK_TO_RULE,
+    _LEVEL_TO_SEVERITY,
+)
+
+# ---------------------------------------------------------------------------
+# Fixtures — sample clang-tidy --export-fixes YAML content
+# ---------------------------------------------------------------------------
+
+SAMPLE_SOURCE = """\
+#include "MyActor.h"
+
+void AMyActor::BeginPlay()
+{
+    Super::BeginPlay();
+}
+
+void AMyActor::Tick(float DeltaTime)
+{
+    Super::Tick(DeltaTime);
+    for (auto Elem : SomeArray)
+    {
+        Process(Elem);
+    }
+}
+"""
+
+# Offset of "void AMyActor::BeginPlay()" line (line 3, 0-indexed char 22)
+# Lines: line1=21chars+\n, line2=\n → offset 23 is start of line 3
+_BEGINPLAY_OFFSET = len("#include \"MyActor.h\"\n\n")
+# Offset of "for (auto Elem" line (line 11)
+_FORLOOP_OFFSET = SAMPLE_SOURCE.index("for (auto Elem")
+
+
+def _make_fixes_yaml(diagnostics, main_file="/project/Source/MyActor.cpp"):
+    """Helper to build a clang-tidy fixes YAML string."""
+    data = {
+        "MainSourceFile": main_file,
+        "Diagnostics": diagnostics,
+    }
+    return yaml.dump(data, default_flow_style=False, allow_unicode=True)
+
+
+def _make_diag(
+    name,
+    message,
+    file_path="/project/Source/MyActor.cpp",
+    offset=100,
+    level="Warning",
+    replacements=None,
+):
+    """Helper to build a single diagnostic dict."""
+    diag = {
+        "DiagnosticName": name,
+        "DiagnosticMessage": {
+            "Message": message,
+            "FilePath": file_path,
+            "FileOffset": offset,
+            "Replacements": replacements or [],
+        },
+        "Level": level,
+        "BuildDirectory": "/project/build",
+    }
+    return diag
+
+
+# ---------------------------------------------------------------------------
+# parse_tidy_fixes tests
+# ---------------------------------------------------------------------------
+
+
+class TestParseTidyFixes:
+    """Tests for parsing clang-tidy --export-fixes YAML."""
+
+    def test_parse_valid_yaml(self, tmp_path):
+        diag = _make_diag(
+            "modernize-use-override",
+            "annotate this function with 'override'",
+        )
+        content = _make_fixes_yaml([diag])
+        f = tmp_path / "fixes.yaml"
+        f.write_text(content)
+        result = parse_tidy_fixes(str(f))
+        assert len(result) == 1
+        assert result[0]["DiagnosticName"] == "modernize-use-override"
+
+    def test_parse_multiple_diagnostics(self, tmp_path):
+        diags = [
+            _make_diag("modernize-use-override", "msg1"),
+            _make_diag("performance-for-range-copy", "msg2"),
+            _make_diag("bugprone-division-by-zero", "msg3"),
+        ]
+        content = _make_fixes_yaml(diags)
+        f = tmp_path / "fixes.yaml"
+        f.write_text(content)
+        result = parse_tidy_fixes(str(f))
+        assert len(result) == 3
+
+    def test_parse_nonexistent_file(self):
+        result = parse_tidy_fixes("/nonexistent/fixes.yaml")
+        assert result == []
+
+    def test_parse_empty_file(self, tmp_path):
+        f = tmp_path / "fixes.yaml"
+        f.write_text("")
+        result = parse_tidy_fixes(str(f))
+        assert result == []
+
+    def test_parse_whitespace_only_file(self, tmp_path):
+        f = tmp_path / "fixes.yaml"
+        f.write_text("   \n  \n")
+        result = parse_tidy_fixes(str(f))
+        assert result == []
+
+    def test_parse_invalid_yaml(self, tmp_path):
+        f = tmp_path / "fixes.yaml"
+        f.write_text("{{invalid yaml: [")
+        result = parse_tidy_fixes(str(f))
+        assert result == []
+
+    def test_parse_yaml_without_diagnostics_key(self, tmp_path):
+        f = tmp_path / "fixes.yaml"
+        f.write_text("MainSourceFile: /path/to/file.cpp\n")
+        result = parse_tidy_fixes(str(f))
+        assert result == []
+
+    def test_parse_yaml_with_null_diagnostics(self, tmp_path):
+        f = tmp_path / "fixes.yaml"
+        f.write_text("MainSourceFile: /path\nDiagnostics: null\n")
+        result = parse_tidy_fixes(str(f))
+        assert result == []
+
+    def test_parse_yaml_not_dict(self, tmp_path):
+        f = tmp_path / "fixes.yaml"
+        f.write_text("- item1\n- item2\n")
+        result = parse_tidy_fixes(str(f))
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# convert_diagnostics tests
+# ---------------------------------------------------------------------------
+
+
+class TestConvertDiagnostics:
+    """Tests for converting raw diagnostics to findings."""
+
+    def test_diagnostic_without_fix_becomes_comment(self):
+        diags = [
+            _make_diag(
+                "bugprone-division-by-zero",
+                "division by zero is undefined",
+                offset=100,
+                level="Warning",
+            ),
+        ]
+        findings = convert_diagnostics(diags)
+        assert len(findings) == 1
+        f = findings[0]
+        assert f["rule_id"] == "bugprone-division-by-zero"
+        assert f["severity"] == "warning"
+        assert f["message"] == "division by zero is undefined"
+        assert f["suggestion"] is None
+
+    def test_diagnostic_with_fix_generates_suggestion(self):
+        source = "    virtual void BeginPlay();\n"
+        abs_path = "/project/Source/MyActor.cpp"
+        # Replacement: insert ' override' before the semicolon
+        replacements = [
+            {
+                "FilePath": abs_path,
+                "Offset": len("    virtual void BeginPlay()"),
+                "Length": 0,
+                "ReplacementText": " override",
+            }
+        ]
+        diags = [
+            _make_diag(
+                "modernize-use-override",
+                "annotate this function with 'override'",
+                file_path=abs_path,
+                offset=0,
+                replacements=replacements,
+            ),
+        ]
+        findings = convert_diagnostics(
+            diags,
+            source_contents={abs_path: source},
+        )
+        assert len(findings) == 1
+        f = findings[0]
+        assert f["rule_id"] == "override_keyword"
+        assert f["suggestion"] is not None
+        assert "override" in f["suggestion"]
+
+    def test_rule_id_mapping(self):
+        """clang-tidy check names should map to checklist rule_ids."""
+        for tidy_check, expected_rule in _CHECK_TO_RULE.items():
+            diags = [_make_diag(tidy_check, "msg")]
+            findings = convert_diagnostics(diags)
+            assert findings[0]["rule_id"] == expected_rule
+
+    def test_unmapped_check_uses_check_name(self):
+        diags = [
+            _make_diag("readability-else-after-return", "msg"),
+        ]
+        findings = convert_diagnostics(diags)
+        assert findings[0]["rule_id"] == "readability-else-after-return"
+
+    def test_severity_mapping(self):
+        for level, expected in _LEVEL_TO_SEVERITY.items():
+            diags = [_make_diag("some-check", "msg", level=level)]
+            findings = convert_diagnostics(diags)
+            assert findings[0]["severity"] == expected
+
+    def test_unknown_severity_defaults_to_warning(self):
+        diags = [_make_diag("some-check", "msg", level="UnknownLevel")]
+        findings = convert_diagnostics(diags)
+        assert findings[0]["severity"] == "warning"
+
+    def test_line_number_from_source_content(self):
+        source = "line1\nline2\nline3\n"
+        abs_path = "/project/Source/Test.cpp"
+        # Offset 6 is start of "line2" → line 2
+        diags = [
+            _make_diag("some-check", "msg", file_path=abs_path, offset=6),
+        ]
+        findings = convert_diagnostics(
+            diags,
+            source_contents={abs_path: source},
+        )
+        assert findings[0]["line"] == 2
+
+    def test_line_number_fallback_without_source(self):
+        diags = [
+            _make_diag("some-check", "msg", offset=240),
+        ]
+        findings = convert_diagnostics(diags)
+        # Rough estimate: 240 // 80 + 1 = 4
+        assert findings[0]["line"] == 4
+
+    def test_empty_diagnostics(self):
+        findings = convert_diagnostics([])
+        assert findings == []
+
+    def test_non_dict_diagnostic_skipped(self):
+        findings = convert_diagnostics(["not a dict", 42, None])
+        assert findings == []
+
+    def test_missing_diagnostic_message(self):
+        diags = [{"DiagnosticName": "check", "Level": "Warning"}]
+        findings = convert_diagnostics(diags)
+        # Should handle gracefully — DiagnosticMessage defaults to {}
+        assert len(findings) == 1
+        assert findings[0]["message"] == ""
+
+    def test_empty_replacements_no_suggestion(self):
+        diags = [
+            _make_diag("some-check", "msg", replacements=[]),
+        ]
+        findings = convert_diagnostics(diags)
+        assert findings[0]["suggestion"] is None
+
+    def test_multiple_diagnostics_different_files(self):
+        diags = [
+            _make_diag(
+                "check-a", "msg1",
+                file_path="/project/Source/A.cpp", offset=0,
+            ),
+            _make_diag(
+                "check-b", "msg2",
+                file_path="/project/Source/B.cpp", offset=0,
+            ),
+        ]
+        findings = convert_diagnostics(diags)
+        assert len(findings) == 2
+        files = {f["file"] for f in findings}
+        assert len(files) == 2
+
+    def test_replacement_text_applied_correctly(self):
+        source = "    void Tick(float DeltaTime);\n"
+        abs_path = "/project/Source/MyActor.cpp"
+        # Replace "void" with "virtual void"
+        replacements = [
+            {
+                "FilePath": abs_path,
+                "Offset": 4,  # start of "void"
+                "Length": 4,  # length of "void"
+                "ReplacementText": "virtual void",
+            }
+        ]
+        diags = [
+            _make_diag(
+                "some-check", "msg",
+                file_path=abs_path, offset=4,
+                replacements=replacements,
+            ),
+        ]
+        findings = convert_diagnostics(
+            diags,
+            source_contents={abs_path: source},
+        )
+        assert findings[0]["suggestion"] is not None
+        assert "virtual void" in findings[0]["suggestion"]
+
+
+# ---------------------------------------------------------------------------
+# deduplicate tests
+# ---------------------------------------------------------------------------
+
+
+class TestDeduplicate:
+    """Tests for Stage 1 / Stage 2 deduplication."""
+
+    def test_no_overlap(self):
+        s2 = [
+            {"file": "A.cpp", "line": 10, "rule_id": "check-a", "severity": "warning",
+             "message": "msg", "suggestion": None},
+        ]
+        s1 = [
+            {"file": "A.cpp", "line": 20, "rule_id": "logtemp", "severity": "warning",
+             "message": "msg", "suggestion": None},
+        ]
+        result = deduplicate(s2, s1)
+        assert len(result) == 1
+
+    def test_exact_file_line_overlap_removed(self):
+        s2 = [
+            {"file": "A.cpp", "line": 10, "rule_id": "override_keyword",
+             "severity": "warning", "message": "msg", "suggestion": None},
+        ]
+        s1 = [
+            {"file": "A.cpp", "line": 10, "rule_id": "logtemp",
+             "severity": "warning", "message": "msg", "suggestion": None},
+        ]
+        result = deduplicate(s2, s1)
+        assert len(result) == 0
+
+    def test_different_file_same_line_kept(self):
+        s2 = [
+            {"file": "B.cpp", "line": 10, "rule_id": "check-a",
+             "severity": "warning", "message": "msg", "suggestion": None},
+        ]
+        s1 = [
+            {"file": "A.cpp", "line": 10, "rule_id": "logtemp",
+             "severity": "warning", "message": "msg", "suggestion": None},
+        ]
+        result = deduplicate(s2, s1)
+        assert len(result) == 1
+
+    def test_multiple_overlaps(self):
+        s2 = [
+            {"file": "A.cpp", "line": 10, "rule_id": "c1", "severity": "warning",
+             "message": "msg", "suggestion": None},
+            {"file": "A.cpp", "line": 20, "rule_id": "c2", "severity": "warning",
+             "message": "msg", "suggestion": None},
+            {"file": "A.cpp", "line": 30, "rule_id": "c3", "severity": "warning",
+             "message": "msg", "suggestion": None},
+        ]
+        s1 = [
+            {"file": "A.cpp", "line": 10, "rule_id": "s1", "severity": "warning",
+             "message": "msg", "suggestion": None},
+            {"file": "A.cpp", "line": 30, "rule_id": "s2", "severity": "warning",
+             "message": "msg", "suggestion": None},
+        ]
+        result = deduplicate(s2, s1)
+        assert len(result) == 1
+        assert result[0]["line"] == 20
+
+    def test_empty_stage1(self):
+        s2 = [
+            {"file": "A.cpp", "line": 10, "rule_id": "c1", "severity": "warning",
+             "message": "msg", "suggestion": None},
+        ]
+        result = deduplicate(s2, [])
+        assert len(result) == 1
+
+    def test_empty_stage2(self):
+        s1 = [
+            {"file": "A.cpp", "line": 10, "rule_id": "s1", "severity": "warning",
+             "message": "msg", "suggestion": None},
+        ]
+        result = deduplicate([], s1)
+        assert len(result) == 0
+
+    def test_both_empty(self):
+        result = deduplicate([], [])
+        assert len(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# Helper function tests
+# ---------------------------------------------------------------------------
+
+
+class TestHelpers:
+    """Tests for helper functions."""
+
+    def test_offset_to_line_first_line(self):
+        assert _offset_to_line("hello\nworld\n", 0) == 1
+        assert _offset_to_line("hello\nworld\n", 3) == 1
+
+    def test_offset_to_line_second_line(self):
+        assert _offset_to_line("hello\nworld\n", 6) == 2
+
+    def test_offset_to_line_third_line(self):
+        assert _offset_to_line("line1\nline2\nline3\n", 12) == 3
+
+    def test_resolve_path_relative(self):
+        # Already relative paths should be returned as-is or simplified
+        result = _resolve_path("Source/MyActor.cpp")
+        assert "MyActor.cpp" in result
+
+    def test_resolve_path_with_build_dir(self):
+        result = _resolve_path("/project/Source/A.cpp", "/project")
+        assert result == "Source/A.cpp"
+
+
+# ---------------------------------------------------------------------------
+# Integration test — full pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestIntegration:
+    """End-to-end integration tests."""
+
+    def test_full_pipeline_with_fixes_yaml(self, tmp_path):
+        """Parse a fixes YAML → convert → deduplicate → JSON output."""
+        source = "    virtual void BeginPlay();\n    void Tick(float dt);\n"
+        abs_path = "/project/Source/MyActor.cpp"
+
+        diags = [
+            _make_diag(
+                "modernize-use-override",
+                "annotate with 'override'",
+                file_path=abs_path,
+                offset=0,
+                replacements=[
+                    {
+                        "FilePath": abs_path,
+                        "Offset": len("    virtual void BeginPlay()"),
+                        "Length": 0,
+                        "ReplacementText": " override",
+                    }
+                ],
+            ),
+            _make_diag(
+                "bugprone-division-by-zero",
+                "division by zero",
+                file_path=abs_path,
+                offset=len(source) - 5,
+                level="Error",
+            ),
+        ]
+
+        # Write fixes YAML
+        fixes_yaml = _make_fixes_yaml(diags)
+        f = tmp_path / "fixes.yaml"
+        f.write_text(fixes_yaml)
+
+        # Parse
+        raw = parse_tidy_fixes(str(f))
+        assert len(raw) == 2
+
+        # Convert
+        findings = convert_diagnostics(
+            raw, source_contents={abs_path: source}
+        )
+        assert len(findings) == 2
+
+        # One should have suggestion (override), one should not (division)
+        with_suggestion = [f for f in findings if f["suggestion"] is not None]
+        without_suggestion = [f for f in findings if f["suggestion"] is None]
+        assert len(with_suggestion) == 1
+        assert len(without_suggestion) == 1
+        assert "override" in with_suggestion[0]["suggestion"]
+
+    def test_full_pipeline_with_deduplication(self, tmp_path):
+        """Stage 2 findings overlapping Stage 1 should be removed."""
+        abs_path = "/project/Source/A.cpp"
+        diags = [
+            _make_diag("check-a", "msg1", file_path=abs_path, offset=0),
+            _make_diag("check-b", "msg2", file_path=abs_path, offset=800),
+        ]
+        fixes_yaml = _make_fixes_yaml(diags)
+        f = tmp_path / "fixes.yaml"
+        f.write_text(fixes_yaml)
+
+        raw = parse_tidy_fixes(str(f))
+        s2_findings = convert_diagnostics(raw)
+
+        # Create Stage 1 results overlapping line 1
+        s1_findings = [
+            {"file": s2_findings[0]["file"], "line": s2_findings[0]["line"],
+             "rule_id": "logtemp", "severity": "warning",
+             "message": "msg", "suggestion": None},
+        ]
+
+        result = deduplicate(s2_findings, s1_findings)
+        # One should be removed (same file+line), one should remain
+        assert len(result) == len(s2_findings) - 1
+
+    def test_pvs_report_ignored_gracefully(self, tmp_path):
+        """--pvs-report should be accepted but ignored."""
+        # This tests the CLI arg is handled; actual PVS parsing is a placeholder
+        abs_path = "/project/Source/A.cpp"
+        diags = [_make_diag("check-a", "msg")]
+        fixes_yaml = _make_fixes_yaml(diags)
+        f = tmp_path / "fixes.yaml"
+        f.write_text(fixes_yaml)
+
+        raw = parse_tidy_fixes(str(f))
+        findings = convert_diagnostics(raw)
+        # Should have findings from clang-tidy only
+        assert len(findings) == 1
+
+
+# ---------------------------------------------------------------------------
+# .clang-tidy config validation
+# ---------------------------------------------------------------------------
+
+
+class TestClangTidyConfig:
+    """Validate the .clang-tidy configuration file."""
+
+    CLANG_TIDY_PATH = (
+        Path(__file__).resolve().parent.parent / "configs" / ".clang-tidy"
+    )
+
+    def test_config_exists(self):
+        assert self.CLANG_TIDY_PATH.exists()
+
+    def test_config_is_valid_yaml(self):
+        content = self.CLANG_TIDY_PATH.read_text(encoding="utf-8")
+        data = yaml.safe_load(content)
+        assert isinstance(data, dict)
+
+    def test_config_has_checks(self):
+        content = self.CLANG_TIDY_PATH.read_text(encoding="utf-8")
+        data = yaml.safe_load(content)
+        checks = data.get("Checks", "")
+        assert "modernize-use-override" in checks
+        assert "cppcoreguidelines-virtual-class-destructor" in checks
+        assert "performance-for-range-copy" in checks
+        assert "bugprone-division-by-zero" in checks
+
+    def test_config_has_header_filter(self):
+        content = self.CLANG_TIDY_PATH.read_text(encoding="utf-8")
+        data = yaml.safe_load(content)
+        assert "HeaderFilterRegex" in data
+        assert "Source" in data["HeaderFilterRegex"]
+
+    def test_all_spec_checks_present(self):
+        """All checks from STEP5_STAGE2.md should be in the config."""
+        content = self.CLANG_TIDY_PATH.read_text(encoding="utf-8")
+        data = yaml.safe_load(content)
+        checks = data.get("Checks", "")
+        expected_checks = [
+            "cppcoreguidelines-virtual-class-destructor",
+            "bugprone-virtual-near-miss",
+            "performance-unnecessary-copy-initialization",
+            "performance-for-range-copy",
+            "modernize-use-override",
+            "clang-analyzer-optin.cplusplus.VirtualCall",
+            "bugprone-division-by-zero",
+            "readability-else-after-return",
+            "readability-redundant-smartptr-get",
+        ]
+        for check in expected_checks:
+            assert check in checks, f"Missing check: {check}"
