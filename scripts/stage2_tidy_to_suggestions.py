@@ -177,10 +177,61 @@ def parse_tidy_fixes(
     return data.get("Diagnostics", []) or []
 
 
+def _extract_suggestion_span(
+    original: str,
+    modified: str,
+) -> Tuple[Optional[str], int, Optional[int]]:
+    """Compare original and modified source to extract the changed span.
+
+    Returns:
+        (suggestion_text, start_line_1based, end_line_1based_or_None)
+        - suggestion_text: the replacement text (modified lines in the changed
+          range), or None if no difference is found.
+        - start_line: 1-based first changed line in the *original* file.
+        - end_line: 1-based last changed line in the *original* file,
+          or None if the change is single-line.
+    """
+    orig_lines = original.splitlines()
+    mod_lines = modified.splitlines()
+
+    # Find first differing line (from top)
+    first_diff = 0
+    min_len = min(len(orig_lines), len(mod_lines))
+    while first_diff < min_len and orig_lines[first_diff] == mod_lines[first_diff]:
+        first_diff += 1
+
+    if first_diff == len(orig_lines) == len(mod_lines):
+        return None, 1, None  # No difference
+
+    # Find last differing line (from bottom)
+    last_orig = len(orig_lines) - 1
+    last_mod = len(mod_lines) - 1
+    while (
+        last_orig > first_diff
+        and last_mod > first_diff
+        and orig_lines[last_orig] == mod_lines[last_mod]
+    ):
+        last_orig -= 1
+        last_mod -= 1
+
+    # Extract suggestion text (modified lines in the changed range)
+    suggestion_lines = mod_lines[first_diff : last_mod + 1]
+    suggestion = "\n".join(suggestion_lines)
+
+    # Convert to 1-based line numbers (original file's lines)
+    start_line = first_diff + 1
+    end_line = last_orig + 1
+
+    if start_line == end_line:
+        return suggestion, start_line, None  # single line
+    return suggestion, start_line, end_line
+
+
 def convert_diagnostics(
     diagnostics: List[Dict[str, Any]],
     source_contents: Optional[Dict[str, str]] = None,
     build_dir: Optional[str] = None,
+    path_map: Optional[Dict[str, str]] = None,
 ) -> List[Dict[str, Any]]:
     """Convert clang-tidy diagnostics to Stage-compatible findings.
 
@@ -191,6 +242,10 @@ def convert_diagnostics(
             offsets and for producing suggestion text.  When absent,
             offset-to-line conversion falls back to offset // 80.
         build_dir: Optional build directory for path resolution.
+        path_map: Optional mapping of original file paths to repo-relative
+            paths, as returned by _collect_source_contents().  When
+            provided, these paths are preferred over _resolve_path() so
+            that findings use the same repo-relative paths as Stage 1.
 
     Returns:
         List of finding dicts with file, line, rule_id, severity,
@@ -216,8 +271,12 @@ def convert_diagnostics(
         level = diag.get("Level", "Warning")
         severity = _LEVEL_TO_SEVERITY.get(level, "warning")
 
-        # Resolve file path
-        rel_path = _resolve_path(file_path, build_dir)
+        # Resolve file path — prefer path_map (source_dir-resolved) over
+        # _resolve_path to ensure repo-relative paths match Stage 1 / diff.
+        if path_map and file_path in path_map:
+            rel_path = path_map[file_path]
+        else:
+            rel_path = _resolve_path(file_path, build_dir)
 
         # Compute line number
         if source_contents and file_path in source_contents:
@@ -239,6 +298,7 @@ def convert_diagnostics(
 
         # Generate suggestion from replacements if available
         suggestion = None
+        end_line = None
         if replacements and source_contents:
             abs_path = file_path
             content = source_contents.get(abs_path)
@@ -251,10 +311,13 @@ def convert_diagnostics(
             if content is not None:
                 modified = _apply_replacements(content, replacements, abs_path)
                 if modified is not None and modified != content:
-                    # Extract the modified line(s) at the replacement site
-                    mod_lines = modified.splitlines()
-                    if 0 < line_num <= len(mod_lines):
-                        suggestion = mod_lines[line_num - 1]
+                    suggestion, span_start, span_end = _extract_suggestion_span(
+                        content, modified
+                    )
+                    # Use the span's line numbers instead of the diagnostic
+                    # offset — the actual changed range may differ.
+                    line_num = span_start
+                    end_line = span_end
 
         finding: Dict[str, Any] = {
             "file": rel_path,
@@ -264,6 +327,8 @@ def convert_diagnostics(
             "message": message,
             "suggestion": suggestion,
         }
+        if end_line is not None:
+            finding["end_line"] = end_line
         findings.append(finding)
 
     return findings
@@ -298,7 +363,7 @@ def deduplicate(
 def _collect_source_contents(
     diagnostics: List[Dict[str, Any]],
     source_dir: Optional[str] = None,
-) -> Dict[str, str]:
+) -> Tuple[Dict[str, str], Dict[str, str]]:
     """Read source files referenced in diagnostics.
 
     Collects unique file paths from diagnostics and reads their contents.
@@ -309,9 +374,15 @@ def _collect_source_contents(
         source_dir: Optional base directory to resolve relative paths.
 
     Returns:
-        Mapping of absolute file paths to their contents.
+        A tuple of (contents, path_map):
+        - contents: mapping of original file paths to their text contents.
+        - path_map: mapping of original file paths to repo-relative paths,
+          populated when source_dir suffix-matching is used. Downstream code
+          should prefer ``path_map[fp]`` over ``_resolve_path(fp)`` so that
+          findings use the same repo-relative paths as Stage 1 / git diff.
     """
     contents: Dict[str, str] = {}
+    path_map: Dict[str, str] = {}
     seen_paths: set = set()
 
     for diag in diagnostics:
@@ -346,18 +417,19 @@ def _collect_source_contents(
         # Try relative to source_dir
         if source_dir:
             sd = Path(source_dir)
-            candidates = [sd / p.name]  # filename only
-            # For absolute paths, try each possible suffix against source_dir.
-            # e.g. /tmp/build/repo/Source/A.cpp → try Source/A.cpp, A.cpp, etc.
+            # Build (relative_suffix, candidate_path) pairs so we can record
+            # which suffix matched → becomes the repo-relative path.
+            candidates: List[Tuple[str, Path]] = [(p.name, sd / p.name)]
             if p.is_absolute():
                 parts = p.parts[1:]  # drop root '/'
                 for i in range(len(parts)):
-                    candidates.append(sd / Path(*parts[i:]))
+                    suffix = str(Path(*parts[i:]))
+                    candidates.append((suffix, sd / suffix))
             else:
-                candidates.append(sd / p)
+                candidates.append((str(p), sd / p))
             # Deduplicate while preserving order
             seen_candidates: set = set()
-            for candidate in candidates:
+            for rel_suffix, candidate in candidates:
                 resolved = str(candidate)
                 if resolved in seen_candidates:
                     continue
@@ -367,11 +439,12 @@ def _collect_source_contents(
                         contents[file_path] = candidate.read_text(
                             encoding="utf-8", errors="replace"
                         )
+                        path_map[file_path] = rel_suffix
                         break
                     except OSError:
                         pass
 
-    return contents
+    return contents, path_map
 
 
 def main() -> None:
@@ -417,7 +490,7 @@ def main() -> None:
     diagnostics = parse_tidy_fixes(args.tidy_fixes)
 
     # Load source files for accurate line numbers and suggestion generation
-    source_contents = _collect_source_contents(diagnostics, args.source_dir)
+    source_contents, path_map = _collect_source_contents(diagnostics, args.source_dir)
     if source_contents:
         print(
             f"Loaded {len(source_contents)} source file(s) for suggestion generation.",
@@ -431,7 +504,11 @@ def main() -> None:
             file=sys.stderr,
         )
 
-    findings = convert_diagnostics(diagnostics, source_contents=source_contents)
+    findings = convert_diagnostics(
+        diagnostics,
+        source_contents=source_contents,
+        path_map=path_map,
+    )
 
     # Deduplicate against Stage 1
     if args.stage1_results:

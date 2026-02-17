@@ -26,6 +26,7 @@ from scripts.stage2_tidy_to_suggestions import (
     deduplicate,
     parse_tidy_fixes,
     _collect_source_contents,
+    _extract_suggestion_span,
     _offset_to_line,
     _resolve_path,
     _CHECK_TO_RULE,
@@ -658,18 +659,22 @@ class TestCollectSourceContents:
         abs_path = str(source_file)
         diags = [_make_diag("check", "msg", file_path=abs_path)]
 
-        contents = _collect_source_contents(diags)
+        contents, path_map = _collect_source_contents(diags)
         assert abs_path in contents
         assert contents[abs_path] == "hello\nworld\n"
+        # Direct absolute match → no path_map entry needed
+        assert abs_path not in path_map
 
     def test_empty_diagnostics(self):
-        contents = _collect_source_contents([])
+        contents, path_map = _collect_source_contents([])
         assert contents == {}
+        assert path_map == {}
 
     def test_nonexistent_files_skipped(self):
         diags = [_make_diag("check", "msg", file_path="/nonexistent/file.cpp")]
-        contents = _collect_source_contents(diags)
+        contents, path_map = _collect_source_contents(diags)
         assert contents == {}
+        assert path_map == {}
 
     def test_source_dir_fallback(self, tmp_path):
         source_dir = tmp_path / "src"
@@ -679,9 +684,12 @@ class TestCollectSourceContents:
         fake_abs = "/nonexistent/Actor.cpp"
         diags = [_make_diag("check", "msg", file_path=fake_abs)]
 
-        contents = _collect_source_contents(diags, source_dir=str(source_dir))
+        contents, path_map = _collect_source_contents(diags, source_dir=str(source_dir))
         assert fake_abs in contents
         assert contents[fake_abs] == "content"
+        # path_map should have the resolved relative path
+        assert fake_abs in path_map
+        assert path_map[fake_abs] == "Actor.cpp"
 
     def test_deduplicates_file_paths(self, tmp_path):
         source_file = tmp_path / "A.cpp"
@@ -692,7 +700,7 @@ class TestCollectSourceContents:
             _make_diag("check-a", "msg1", file_path=abs_path),
             _make_diag("check-b", "msg2", file_path=abs_path),
         ]
-        contents = _collect_source_contents(diags)
+        contents, _ = _collect_source_contents(diags)
         assert len(contents) == 1
 
     def test_collects_replacement_file_paths(self, tmp_path):
@@ -704,13 +712,14 @@ class TestCollectSourceContents:
         replacements = [{"FilePath": str(header_file), "Offset": 0, "Length": 0, "ReplacementText": "x"}]
         diags = [_make_diag("check", "msg", file_path=str(main_file), replacements=replacements)]
 
-        contents = _collect_source_contents(diags)
+        contents, _ = _collect_source_contents(diags)
         assert str(main_file) in contents
         assert str(header_file) in contents
 
     def test_non_dict_diagnostics_skipped(self):
-        contents = _collect_source_contents(["not a dict", 42])
+        contents, path_map = _collect_source_contents(["not a dict", 42])
         assert contents == {}
+        assert path_map == {}
 
     def test_source_dir_resolves_absolute_path_suffixes(self, tmp_path):
         """When FilePath is absolute but points to a different root,
@@ -725,9 +734,25 @@ class TestCollectSourceContents:
         fake_abs = "/tmp/build/repo/Source/Actors/MyActor.cpp"
         diags = [_make_diag("check", "msg", file_path=fake_abs)]
 
-        contents = _collect_source_contents(diags, source_dir=str(source_dir))
+        contents, path_map = _collect_source_contents(diags, source_dir=str(source_dir))
         assert fake_abs in contents
         assert contents[fake_abs] == "found it"
+        # path_map should have a repo-relative path
+        assert fake_abs in path_map
+
+    def test_source_dir_path_map_has_relative_suffix(self, tmp_path):
+        """path_map should contain the matched suffix as repo-relative path."""
+        source_dir = tmp_path / "repo"
+        (source_dir / "Source").mkdir(parents=True)
+        (source_dir / "Source" / "A.cpp").write_text("data")
+
+        fake_abs = "/other/root/Source/A.cpp"
+        diags = [_make_diag("check", "msg", file_path=fake_abs)]
+
+        _, path_map = _collect_source_contents(diags, source_dir=str(source_dir))
+        assert fake_abs in path_map
+        # The matched suffix should be "Source/A.cpp" (not the full abs path)
+        assert path_map[fake_abs] == "Source/A.cpp"
 
     def test_source_dir_prefers_longer_suffix_match(self, tmp_path):
         """Suffix matching should find the most specific match."""
@@ -740,9 +765,9 @@ class TestCollectSourceContents:
         fake_abs = "/build/checkout/Source/A.cpp"
         diags = [_make_diag("check", "msg", file_path=fake_abs)]
 
-        contents = _collect_source_contents(diags, source_dir=str(source_dir))
+        contents, path_map = _collect_source_contents(diags, source_dir=str(source_dir))
         assert fake_abs in contents
-        # p.name ("A.cpp") is tried first but Source/A.cpp is the correct match.
+        assert fake_abs in path_map
         # Both would "work" as files, but the first candidate wins.
         # What matters is that *something* is found.
         assert contents[fake_abs] in ("correct", "wrong")
@@ -835,6 +860,268 @@ class TestByteOffsetHandling:
         assert findings[0]["line"] == 2  # not offset//80 fallback
         assert findings[0]["suggestion"] is not None
         assert "Bar" in findings[0]["suggestion"]
+
+
+# ---------------------------------------------------------------------------
+# _extract_suggestion_span tests
+# ---------------------------------------------------------------------------
+
+
+class TestExtractSuggestionSpan:
+    """Tests for _extract_suggestion_span helper."""
+
+    def test_single_line_change(self):
+        original = "line1\nline2\nline3\n"
+        modified = "line1\nLINE2\nline3\n"
+        suggestion, start, end = _extract_suggestion_span(original, modified)
+        assert suggestion == "LINE2"
+        assert start == 2
+        assert end is None  # single line
+
+    def test_multi_line_replacement(self):
+        """readability-else-after-return style: remove else block."""
+        original = "if (x) {\n    return;\n} else {\n    doStuff();\n}\n"
+        modified = "if (x) {\n    return;\n}\ndoStuff();\n"
+        suggestion, start, end = _extract_suggestion_span(original, modified)
+        assert start == 3  # first changed line (1-based)
+        assert end == 5    # last changed line in original (1-based)
+        assert "doStuff();" in suggestion
+
+    def test_insertion(self):
+        """Adding a line (e.g., inserting 'override')."""
+        original = "void Foo();\n"
+        modified = "void Foo() override;\n"
+        suggestion, start, end = _extract_suggestion_span(original, modified)
+        assert suggestion == "void Foo() override;"
+        assert start == 1
+        assert end is None
+
+    def test_no_difference(self):
+        original = "line1\nline2\n"
+        suggestion, start, end = _extract_suggestion_span(original, original)
+        assert suggestion is None
+
+    def test_multi_line_expansion(self):
+        """Original 1 line → modified 3 lines."""
+        original = "line1\nold_single\nline3\n"
+        modified = "line1\nnew_a\nnew_b\nnew_c\nline3\n"
+        suggestion, start, end = _extract_suggestion_span(original, modified)
+        assert start == 2
+        assert end is None  # only 1 original line affected (line 2)
+        assert "new_a\nnew_b\nnew_c" == suggestion
+
+    def test_multi_line_contraction(self):
+        """Original 3 lines → modified 1 line."""
+        original = "line1\nold_a\nold_b\nold_c\nline5\n"
+        modified = "line1\nnew_single\nline5\n"
+        suggestion, start, end = _extract_suggestion_span(original, modified)
+        assert start == 2
+        assert end == 4   # lines 2-4 in original are replaced
+        assert suggestion == "new_single"
+
+
+# ---------------------------------------------------------------------------
+# path_map integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestPathMapIntegration:
+    """Tests for path_map usage in convert_diagnostics."""
+
+    def test_path_map_overrides_resolve_path(self):
+        """When path_map has an entry, it should be used instead of _resolve_path."""
+        abs_path = "/tmp/build/repo/Source/A.cpp"
+        diags = [_make_diag("some-check", "msg", file_path=abs_path, offset=0)]
+        path_map = {abs_path: "Source/A.cpp"}
+
+        findings = convert_diagnostics(diags, path_map=path_map)
+        assert len(findings) == 1
+        assert findings[0]["file"] == "Source/A.cpp"
+
+    def test_without_path_map_uses_resolve_path(self):
+        """Without path_map, _resolve_path is used (may return abs path)."""
+        abs_path = "/tmp/build/repo/Source/A.cpp"
+        diags = [_make_diag("some-check", "msg", file_path=abs_path, offset=0)]
+
+        findings = convert_diagnostics(diags)
+        assert len(findings) == 1
+        # _resolve_path can't make this relative (not under cwd), so abs path
+        assert findings[0]["file"] == abs_path
+
+    def test_path_map_enables_dedup_with_stage1(self):
+        """With path_map, Stage 2 findings should dedup against Stage 1."""
+        abs_path = "/tmp/build/repo/Source/A.cpp"
+        path_map = {abs_path: "Source/A.cpp"}
+
+        diags = [_make_diag("check-a", "msg", file_path=abs_path, offset=0)]
+        s2_findings = convert_diagnostics(diags, path_map=path_map)
+        assert s2_findings[0]["file"] == "Source/A.cpp"
+
+        s1_findings = [
+            {"file": "Source/A.cpp", "line": s2_findings[0]["line"],
+             "rule_id": "logtemp", "severity": "warning",
+             "message": "msg", "suggestion": None},
+        ]
+
+        result = deduplicate(s2_findings, s1_findings)
+        assert len(result) == 0  # dedup should work now
+
+    def test_cli_source_dir_produces_relative_paths(self, tmp_path):
+        """CLI with --source-dir should produce repo-relative file paths."""
+        import subprocess
+
+        source_dir = tmp_path / "repo" / "Source"
+        source_dir.mkdir(parents=True)
+        source_file = source_dir / "Actor.cpp"
+        source_file.write_text("void Foo();\n")
+
+        fake_abs = "/nonexistent/build/Source/Actor.cpp"
+        diags = [_make_diag("check", "msg", file_path=fake_abs, offset=0)]
+        fixes_yaml = _make_fixes_yaml(diags)
+        fixes_file = tmp_path / "fixes.yaml"
+        fixes_file.write_text(fixes_yaml)
+
+        output_file = tmp_path / "output.json"
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "scripts.stage2_tidy_to_suggestions",
+                "--tidy-fixes", str(fixes_file),
+                "--source-dir", str(source_dir),
+                "--output", str(output_file),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+
+        findings = json.loads(output_file.read_text())
+        assert len(findings) == 1
+        # Should be a relative path, not the fake absolute
+        assert findings[0]["file"] != fake_abs
+        assert "Actor.cpp" in findings[0]["file"]
+
+
+# ---------------------------------------------------------------------------
+# Multi-line suggestion integration tests
+# ---------------------------------------------------------------------------
+
+
+class TestMultiLineSuggestion:
+    """Tests for multi-line suggestion extraction in convert_diagnostics."""
+
+    def test_multiline_fix_produces_end_line(self):
+        """A fix spanning 3 original lines should have end_line set."""
+        # Lines: 1=header, 2-4=old code, 5=footer
+        source = "header\nold_a\nold_b\nold_c\nfooter\n"
+        abs_path = "/project/Test.cpp"
+        raw = source.encode("utf-8")
+
+        # Replace "old_a\nold_b\nold_c" with "new_single"
+        start_offset = raw.index(b"old_a")
+        end_of_old_c = raw.index(b"old_c") + len(b"old_c")
+        length = end_of_old_c - start_offset
+
+        replacements = [
+            {
+                "FilePath": abs_path,
+                "Offset": start_offset,
+                "Length": length,
+                "ReplacementText": "new_single",
+            }
+        ]
+        diags = [
+            _make_diag(
+                "some-check", "refactor",
+                file_path=abs_path,
+                offset=start_offset,
+                replacements=replacements,
+            ),
+        ]
+        findings = convert_diagnostics(
+            diags,
+            source_contents={abs_path: source},
+        )
+        assert len(findings) == 1
+        f = findings[0]
+        assert f["line"] == 2          # first changed line
+        assert f["end_line"] == 4      # last changed line in original
+        assert f["suggestion"] == "new_single"
+
+    def test_single_line_fix_no_end_line(self):
+        """A single-line fix should not have end_line."""
+        source = "    virtual void BeginPlay();\n"
+        abs_path = "/project/Test.cpp"
+
+        replacements = [
+            {
+                "FilePath": abs_path,
+                "Offset": len("    virtual void BeginPlay()"),
+                "Length": 0,
+                "ReplacementText": " override",
+            }
+        ]
+        diags = [
+            _make_diag(
+                "modernize-use-override", "add override",
+                file_path=abs_path, offset=0,
+                replacements=replacements,
+            ),
+        ]
+        findings = convert_diagnostics(
+            diags,
+            source_contents={abs_path: source},
+        )
+        assert len(findings) == 1
+        assert "end_line" not in findings[0]
+        assert "override" in findings[0]["suggestion"]
+
+    def test_else_after_return_multiline(self):
+        """readability-else-after-return: remove else block (multi-line fix)."""
+        source = (
+            "int Foo() {\n"
+            "    if (x) {\n"
+            "        return 1;\n"
+            "    } else {\n"
+            "        return 2;\n"
+            "    }\n"
+            "}\n"
+        )
+        abs_path = "/project/Test.cpp"
+        raw = source.encode("utf-8")
+
+        # Replace "} else {\n        return 2;\n    }" with "}\n    return 2;"
+        else_start = raw.index(b"} else {")
+        old_block = b"} else {\n        return 2;\n    }"
+        else_end = else_start + len(old_block)
+
+        replacements = [
+            {
+                "FilePath": abs_path,
+                "Offset": else_start,
+                "Length": len(old_block),
+                "ReplacementText": "}\n    return 2;",
+            }
+        ]
+        diags = [
+            _make_diag(
+                "readability-else-after-return",
+                "do not use 'else' after 'return'",
+                file_path=abs_path,
+                offset=else_start,
+                replacements=replacements,
+            ),
+        ]
+        findings = convert_diagnostics(
+            diags,
+            source_contents={abs_path: source},
+        )
+        assert len(findings) == 1
+        f = findings[0]
+        assert f["end_line"] is not None  # multi-line
+        assert "return 2;" in f["suggestion"]
+        # suggestion should NOT be a single line
+        assert "\n" in f["suggestion"] or f["end_line"] > f["line"]
 
 
 # ---------------------------------------------------------------------------
