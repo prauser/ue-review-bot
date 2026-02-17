@@ -231,9 +231,16 @@ def _extract_suggestion_span(
     # replaces that line with itself plus the new content.
     if start_line > end_line:
         if first_diff > 0:
+            # EOF insertion: anchor to previous matching original line
             first_diff -= 1
             start_line = first_diff + 1
             suggestion_lines = mod_lines[first_diff : last_mod + 1]
+            suggestion = "\n".join(suggestion_lines)
+        elif orig_lines:
+            # BOF insertion (first_diff == 0): anchor to the first original
+            # line by extending the mod range forward to include the
+            # matching anchor line that tail-matching already consumed.
+            suggestion_lines = mod_lines[first_diff : last_mod + 2]
             suggestion = "\n".join(suggestion_lines)
         # After anchoring (or if no anchor: empty original), single-line.
         return suggestion, start_line, None
@@ -427,6 +434,23 @@ def _collect_source_contents(
         if p.is_file():
             try:
                 contents[file_path] = p.read_text(encoding="utf-8", errors="replace")
+                # When source_dir is provided, populate path_map even for
+                # readable absolute paths so findings use repo-relative paths.
+                if source_dir:
+                    sd = Path(source_dir)
+                    try:
+                        path_map[file_path] = str(
+                            p.resolve().relative_to(sd.resolve())
+                        )
+                    except ValueError:
+                        # Not under source_dir — try suffix matching
+                        if p.is_absolute():
+                            parts = p.parts[1:]
+                            for i in range(len(parts)):
+                                suffix = str(Path(*parts[i:]))
+                                if (sd / suffix).is_file():
+                                    path_map[file_path] = suffix
+                                    break
                 continue
             except OSError:
                 pass

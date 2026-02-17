@@ -772,6 +772,38 @@ class TestCollectSourceContents:
         assert contents[fake_abs] == "correct"
         assert path_map[fake_abs] == "Source/A.cpp"
 
+    def test_readable_absolute_path_populates_path_map_with_source_dir(self, tmp_path):
+        """When absolute path is readable AND source_dir is provided,
+        path_map should still be populated with repo-relative path."""
+        source_dir = tmp_path / "repo"
+        sub = source_dir / "Source"
+        sub.mkdir(parents=True)
+        source_file = sub / "Actor.cpp"
+        source_file.write_text("content")
+
+        abs_path = str(source_file)
+        diags = [_make_diag("check", "msg", file_path=abs_path)]
+
+        contents, path_map = _collect_source_contents(diags, source_dir=str(source_dir))
+        assert abs_path in contents
+        assert contents[abs_path] == "content"
+        # path_map should have an entry with the repo-relative path
+        assert abs_path in path_map
+        assert path_map[abs_path] == "Source/Actor.cpp"
+
+    def test_readable_absolute_path_no_source_dir_no_path_map(self, tmp_path):
+        """Without source_dir, readable absolute paths should not populate path_map."""
+        source_file = tmp_path / "Actor.cpp"
+        source_file.write_text("content")
+
+        abs_path = str(source_file)
+        diags = [_make_diag("check", "msg", file_path=abs_path)]
+
+        contents, path_map = _collect_source_contents(diags)
+        assert abs_path in contents
+        # No source_dir → no path_map entry
+        assert abs_path not in path_map
+
 
 # ---------------------------------------------------------------------------
 # Byte offset handling tests
@@ -990,12 +1022,15 @@ class TestExtractSuggestionSpan:
 
     def test_start_never_exceeds_end(self):
         """Regression: start_line must never exceed end_line."""
-        # Various insertion patterns
+        # Various insertion patterns (including BOF insertions)
         cases = [
             ("X\n", "X\nY\n"),
             ("A\nB\n", "A\nB\nC\n"),
             ("", "NEW\n"),
             ("H\n", "H\nI\nJ\nK\n"),
+            ("X\nY\n", "NEW\nX\nY\n"),
+            ("X\n", "NEW\nX\n"),
+            ("X\nY\n", "A\nB\nX\nY\n"),
         ]
         for orig, mod in cases:
             suggestion, start, end = _extract_suggestion_span(orig, mod)
@@ -1004,6 +1039,36 @@ class TestExtractSuggestionSpan:
                     f"Inverted range: start={start} > end={end} "
                     f"for orig={orig!r}, mod={mod!r}"
                 )
+
+    def test_insert_at_bof(self):
+        """Pure insertion at BOF should not drop the first original line."""
+        original = "X\nY\n"
+        modified = "NEW\nX\nY\n"
+        suggestion, start, end = _extract_suggestion_span(original, modified)
+        assert start == 1
+        assert end is None
+        # Suggestion must include the new line AND the anchored first line
+        assert "NEW" in suggestion
+        assert "X" in suggestion
+        assert suggestion == "NEW\nX"
+
+    def test_insert_multiple_lines_at_bof(self):
+        """Inserting multiple lines at BOF should anchor to first original line."""
+        original = "X\nY\n"
+        modified = "A\nB\nX\nY\n"
+        suggestion, start, end = _extract_suggestion_span(original, modified)
+        assert start == 1
+        assert end is None
+        assert suggestion == "A\nB\nX"
+
+    def test_insert_at_bof_single_line_file(self):
+        """Insert at BOF of a single-line file."""
+        original = "X\n"
+        modified = "NEW\nX\n"
+        suggestion, start, end = _extract_suggestion_span(original, modified)
+        assert start == 1
+        assert end is None
+        assert suggestion == "NEW\nX"
 
 
 # ---------------------------------------------------------------------------
@@ -1086,6 +1151,23 @@ class TestPathMapIntegration:
         # Should be a relative path, not the fake absolute
         assert findings[0]["file"] != fake_abs
         assert "Actor.cpp" in findings[0]["file"]
+
+    def test_readable_abs_path_with_source_dir_gives_relative_finding(self, tmp_path):
+        """When absolute path is readable and source_dir provided, finding
+        should use repo-relative path, not the absolute path."""
+        source_dir = tmp_path / "repo"
+        sub = source_dir / "Source"
+        sub.mkdir(parents=True)
+        source_file = sub / "Actor.cpp"
+        source_file.write_text("void Foo();\n")
+
+        abs_path = str(source_file)
+        diags = [_make_diag("check", "msg", file_path=abs_path, offset=0)]
+
+        contents, path_map = _collect_source_contents(diags, source_dir=str(source_dir))
+        findings = convert_diagnostics(diags, source_contents=contents, path_map=path_map)
+        assert len(findings) == 1
+        assert findings[0]["file"] == "Source/Actor.cpp"
 
 
 # ---------------------------------------------------------------------------
