@@ -118,7 +118,7 @@ class TestParseTidyFixes:
         diags = [
             _make_diag("modernize-use-override", "msg1"),
             _make_diag("performance-for-range-copy", "msg2"),
-            _make_diag("bugprone-division-by-zero", "msg3"),
+            _make_diag("clang-analyzer-core.DivideZero", "msg3"),
         ]
         content = _make_fixes_yaml(diags)
         f = tmp_path / "fixes.yaml"
@@ -178,7 +178,7 @@ class TestConvertDiagnostics:
     def test_diagnostic_without_fix_becomes_comment(self):
         diags = [
             _make_diag(
-                "bugprone-division-by-zero",
+                "clang-analyzer-core.DivideZero",
                 "division by zero is undefined",
                 offset=100,
                 level="Warning",
@@ -187,7 +187,7 @@ class TestConvertDiagnostics:
         findings = convert_diagnostics(diags)
         assert len(findings) == 1
         f = findings[0]
-        assert f["rule_id"] == "bugprone-division-by-zero"
+        assert f["rule_id"] == "clang-analyzer-core.DivideZero"
         assert f["severity"] == "warning"
         assert f["message"] == "division by zero is undefined"
         assert f["suggestion"] is None
@@ -475,7 +475,7 @@ class TestIntegration:
                 ],
             ),
             _make_diag(
-                "bugprone-division-by-zero",
+                "clang-analyzer-core.DivideZero",
                 "division by zero",
                 file_path=abs_path,
                 offset=len(source) - 5,
@@ -919,6 +919,35 @@ class TestExtractSuggestionSpan:
         assert end == 4   # lines 2-4 in original are replaced
         assert suggestion == "new_single"
 
+    def test_delete_middle_line(self):
+        """Deleting a middle line should not include unchanged tail in range."""
+        original = "A\nB\nC\n"
+        modified = "A\nC\n"
+        suggestion, start, end = _extract_suggestion_span(original, modified)
+        # Should be a pure deletion of line 2, not range (2,3) including "C"
+        assert start == 2
+        assert end is None  # single line
+        assert suggestion == ""  # pure deletion
+
+    def test_delete_multiple_middle_lines(self):
+        """Deleting two middle lines should only cover those lines."""
+        original = "H\nX\nY\nT\n"
+        modified = "H\nT\n"
+        suggestion, start, end = _extract_suggestion_span(original, modified)
+        assert start == 2
+        assert end == 3    # lines 2-3 deleted
+        assert suggestion == ""
+
+    def test_delete_does_not_include_matching_tail(self):
+        """Regression: unchanged tail lines must not be in the suggestion range."""
+        original = "keep1\ndelete_me\nkeep2\nkeep3\n"
+        modified = "keep1\nkeep2\nkeep3\n"
+        suggestion, start, end = _extract_suggestion_span(original, modified)
+        # Only line 2 should be affected, not lines 2-4
+        assert start == 2
+        assert end is None
+        assert suggestion == ""
+
     def test_insert_at_eof(self):
         """Pure insertion at EOF should not produce inverted range."""
         original = "line1\nline2\n"
@@ -1208,7 +1237,7 @@ class TestClangTidyConfig:
         assert "modernize-use-override" in checks
         assert "cppcoreguidelines-virtual-class-destructor" in checks
         assert "performance-for-range-copy" in checks
-        assert "bugprone-division-by-zero" in checks
+        assert "clang-analyzer-core.DivideZero" in checks
 
     def test_config_has_header_filter(self):
         content = self.CLANG_TIDY_PATH.read_text(encoding="utf-8")
@@ -1228,7 +1257,7 @@ class TestClangTidyConfig:
             "performance-for-range-copy",
             "modernize-use-override",
             "clang-analyzer-optin.cplusplus.VirtualCall",
-            "bugprone-division-by-zero",
+            "clang-analyzer-core.DivideZero",
             "readability-else-after-return",
             "readability-redundant-smartptr-get",
         ]

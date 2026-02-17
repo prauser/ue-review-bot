@@ -70,7 +70,7 @@ performance-unnecessary-copy-initialization
 performance-for-range-copy
 modernize-use-override
 clang-analyzer-optin.cplusplus.VirtualCall
-bugprone-division-by-zero
+clang-analyzer-core.DivideZero
 readability-else-after-return
 readability-redundant-smartptr-get
 ```

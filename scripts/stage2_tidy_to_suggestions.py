@@ -203,12 +203,14 @@ def _extract_suggestion_span(
     if first_diff == len(orig_lines) == len(mod_lines):
         return None, 1, None  # No difference
 
-    # Find last differing line (from bottom)
+    # Find last differing line (from bottom).
+    # Use >= so that tail lines equal to mod can be trimmed even when
+    # last_mod == first_diff (e.g. pure deletion of a middle line).
     last_orig = len(orig_lines) - 1
     last_mod = len(mod_lines) - 1
     while (
-        last_orig > first_diff
-        and last_mod > first_diff
+        last_orig >= first_diff
+        and last_mod >= first_diff
         and orig_lines[last_orig] == mod_lines[last_mod]
     ):
         last_orig -= 1

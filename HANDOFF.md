@@ -207,7 +207,7 @@ python -m scripts.stage1_format_diff \
 - `performance-unnecessary-copy-initialization` — 불필요 복사 초기화
 - `performance-for-range-copy` — range-for 루프 복사
 - `clang-analyzer-optin.cplusplus.VirtualCall` — 생성자/소멸자 내 가상 호출
-- `bugprone-division-by-zero` — 0 나누기
+- `clang-analyzer-core.DivideZero` — 0 나누기
 - `readability-else-after-return` — return 후 불필요 else
 - `readability-redundant-smartptr-get` — 불필요 스마트 포인터 `.get()`
 - `HeaderFilterRegex: 'Source/.*'` (Engine 헤더 제외)
