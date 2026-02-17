@@ -31,6 +31,7 @@ from scripts.post_review import (
     build_review_comments,
     build_summary,
     deduplicate_findings,
+    filter_already_posted,
     format_comment_body,
     load_findings,
     post_review,
@@ -735,6 +736,156 @@ class TestPostReview:
         call_kwargs = client.create_review.call_args
         assert call_kwargs[1]["event"] == "COMMENT"
 
+    def test_post_filters_existing_comments(self, stage1_findings):
+        """Already-posted comments should be filtered out."""
+        client = self._make_client()
+
+        # Build what the existing comments look like on the PR
+        from scripts.post_review import build_review_comments
+
+        existing = []
+        for c in build_review_comments(stage1_findings[:1]):
+            existing.append({
+                "path": c["path"],
+                "line": c["line"],
+                "body": c["body"],
+            })
+
+        responses = post_review(
+            client, "owner", "repo", 1, "abc123", stage1_findings,
+            existing_comments=existing,
+        )
+        assert len(responses) == 1
+        # Should have only 2 comments (first one was filtered)
+        call_kwargs = client.create_review.call_args
+        assert len(call_kwargs[1]["comments"]) == 2
+
+    def test_post_no_existing_comments(self, stage1_findings):
+        """When existing_comments is empty, all comments are posted."""
+        client = self._make_client()
+        responses = post_review(
+            client, "owner", "repo", 1, "abc123", stage1_findings,
+            existing_comments=[],
+        )
+        call_kwargs = client.create_review.call_args
+        assert len(call_kwargs[1]["comments"]) == 3
+
+    def test_all_failures_tracked_in_response(self):
+        """All-failure responses should have 'error' keys for exit code check."""
+        client = self._make_client()
+        client.create_review.side_effect = RuntimeError("token expired")
+
+        findings = [
+            {
+                "file": "A.cpp",
+                "line": 10,
+                "severity": "warning",
+                "rule_id": "logtemp",
+                "message": "msg",
+            }
+        ]
+        responses = post_review(
+            client, "owner", "repo", 1, "abc123", findings
+        )
+        assert all("error" in r for r in responses)
+
+    def test_partial_failure_has_mixed_responses(self):
+        """Some batches succeed, some fail → mixed responses."""
+        client = self._make_client()
+        # First call succeeds, second fails
+        client.create_review.side_effect = [
+            {"id": 1},
+            RuntimeError("rate limit"),
+        ]
+
+        findings = [
+            {
+                "file": f"Source/File{i}.cpp",
+                "line": 10,
+                "severity": "warning",
+                "rule_id": "logtemp",
+                "message": "msg",
+            }
+            for i in range(MAX_COMMENTS_PER_REVIEW + 5)
+        ]
+
+        responses = post_review(
+            client, "owner", "repo", 1, "abc123", findings
+        )
+        assert len(responses) == 2
+        assert "error" not in responses[0]
+        assert "error" in responses[1]
+
+
+# ---------------------------------------------------------------------------
+# filter_already_posted
+# ---------------------------------------------------------------------------
+
+
+class TestFilterAlreadyPosted:
+
+    def test_no_existing_keeps_all(self):
+        comments = [
+            {"path": "A.cpp", "line": 10, "body": "**[WARNING]** `logtemp`\nmsg"},
+            {"path": "B.cpp", "line": 20, "body": "**[ERROR]** `x`\nmsg"},
+        ]
+        result = filter_already_posted(comments, [])
+        assert len(result) == 2
+
+    def test_exact_match_removed(self):
+        comments = [
+            {"path": "A.cpp", "line": 10, "body": "**[WARNING]** `logtemp`\nmsg"},
+        ]
+        existing = [
+            {"path": "A.cpp", "line": 10, "body": "**[WARNING]** `logtemp`\nmsg"},
+        ]
+        result = filter_already_posted(comments, existing)
+        assert len(result) == 0
+
+    def test_different_line_kept(self):
+        comments = [
+            {"path": "A.cpp", "line": 10, "body": "**[WARNING]** msg"},
+        ]
+        existing = [
+            {"path": "A.cpp", "line": 99, "body": "**[WARNING]** msg"},
+        ]
+        result = filter_already_posted(comments, existing)
+        assert len(result) == 1
+
+    def test_different_body_kept(self):
+        comments = [
+            {"path": "A.cpp", "line": 10, "body": "new comment"},
+        ]
+        existing = [
+            {"path": "A.cpp", "line": 10, "body": "old comment"},
+        ]
+        result = filter_already_posted(comments, existing)
+        assert len(result) == 1
+
+    def test_partial_match_filters_duplicate(self):
+        """Only first 120 chars of body compared — long tails ignored."""
+        prefix = "x" * 120
+        comments = [
+            {"path": "A.cpp", "line": 10, "body": prefix + "NEW_TAIL"},
+        ]
+        existing = [
+            {"path": "A.cpp", "line": 10, "body": prefix + "OLD_TAIL"},
+        ]
+        result = filter_already_posted(comments, existing)
+        assert len(result) == 0
+
+    def test_mixed_keeps_new_only(self):
+        comments = [
+            {"path": "A.cpp", "line": 10, "body": "dup"},
+            {"path": "A.cpp", "line": 20, "body": "new"},
+        ]
+        existing = [
+            {"path": "A.cpp", "line": 10, "body": "dup"},
+        ]
+        result = filter_already_posted(comments, existing)
+        assert len(result) == 1
+        assert result[0]["body"] == "new"
+
 
 # ---------------------------------------------------------------------------
 # Integration: load + dedup + build comments
@@ -1140,3 +1291,81 @@ class TestCLIValidation:
                 with pytest.raises(SystemExit) as exc_info:
                     main()
                 assert exc_info.value.code == 1
+
+    def test_all_post_failures_exit_nonzero(self, tmp_path, stage1_findings):
+        """When every create_review call fails, CLI should exit 1."""
+        s1 = tmp_path / "s1.json"
+        s1.write_text(json.dumps(stage1_findings), encoding="utf-8")
+
+        from scripts.post_review import main
+
+        mock_client = MagicMock(spec=GitHubClient)
+        mock_client.create_review.side_effect = RuntimeError("bad token")
+        mock_client.get_existing_review_comments.return_value = []
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "fake"}, clear=False):
+            with patch("scripts.post_review.GitHubClient", return_value=mock_client):
+                with patch(
+                    "sys.argv",
+                    [
+                        "post_review",
+                        "--findings",
+                        str(s1),
+                        "--pr-number",
+                        "1",
+                        "--repo",
+                        "org/repo",
+                        "--commit-sha",
+                        "abc123",
+                    ],
+                ):
+                    with pytest.raises(SystemExit) as exc_info:
+                        main()
+                    assert exc_info.value.code == 1
+
+    def test_partial_post_failure_exit_zero(self, tmp_path):
+        """When at least one batch succeeds, CLI should exit 0."""
+        # Need > 50 findings to trigger 2 batches
+        findings = [
+            {
+                "file": f"Source/File{i}.cpp",
+                "line": 10,
+                "severity": "warning",
+                "rule_id": "logtemp",
+                "message": "msg",
+            }
+            for i in range(MAX_COMMENTS_PER_REVIEW + 5)
+        ]
+        s1 = tmp_path / "s1.json"
+        s1.write_text(json.dumps(findings), encoding="utf-8")
+
+        from scripts.post_review import main
+
+        mock_client = MagicMock(spec=GitHubClient)
+        # First batch succeeds, second fails
+        mock_client.create_review.side_effect = [
+            {"id": 1},
+            RuntimeError("rate limit"),
+        ]
+        mock_client.get_existing_review_comments.return_value = []
+
+        with patch.dict(os.environ, {"GITHUB_TOKEN": "fake"}, clear=False):
+            with patch("scripts.post_review.GitHubClient", return_value=mock_client):
+                with patch(
+                    "sys.argv",
+                    [
+                        "post_review",
+                        "--findings",
+                        str(s1),
+                        "--pr-number",
+                        "1",
+                        "--repo",
+                        "org/repo",
+                        "--commit-sha",
+                        "abc123",
+                    ],
+                ):
+                    with pytest.raises(SystemExit) as exc_info:
+                        main()
+                    # Partial success → exit 0
+                    assert exc_info.value.code == 0

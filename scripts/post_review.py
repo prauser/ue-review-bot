@@ -332,6 +332,41 @@ def split_into_batches(
     return batches
 
 
+def filter_already_posted(
+    comments: List[Dict[str, Any]],
+    existing: List[Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    """Remove comments that already exist on the PR.
+
+    Compares by (path, line) + body prefix to avoid reposting the same
+    inline comment on workflow reruns.  Only the first 120 characters of
+    the body are compared so that minor formatting tweaks don't defeat
+    the dedup.
+
+    Args:
+        comments: New review comment dicts to post.
+        existing: Existing review comment dicts from the GitHub API.
+
+    Returns:
+        Filtered list of comments not yet posted.
+    """
+    existing_keys: Set[Tuple[str, int, str]] = set()
+    for ec in existing:
+        path = ec.get("path", "")
+        line = ec.get("line") or ec.get("original_line") or 0
+        body_prefix = (ec.get("body") or "")[:120]
+        existing_keys.add((path, line, body_prefix))
+
+    filtered = []
+    for c in comments:
+        body_prefix = (c.get("body") or "")[:120]
+        key = (c.get("path", ""), c.get("line", 0), body_prefix)
+        if key not in existing_keys:
+            filtered.append(c)
+
+    return filtered
+
+
 def post_review(
     client: GitHubClient,
     owner: str,
@@ -340,12 +375,17 @@ def post_review(
     commit_sha: str,
     findings: List[Dict[str, Any]],
     stages_available: Optional[List[str]] = None,
+    existing_comments: Optional[List[Dict[str, Any]]] = None,
 ) -> List[Dict[str, Any]]:
     """Post findings as a PR review via the GitHub API.
 
     Handles batching when findings exceed the per-review comment limit.
     The first batch includes the summary body; subsequent batches include
     a continuation note.
+
+    When *existing_comments* is provided (fetched from the PR), comments
+    that were already posted are filtered out to prevent duplicates on
+    workflow reruns.
 
     Args:
         client: Authenticated GitHubClient instance.
@@ -355,12 +395,26 @@ def post_review(
         commit_sha: The HEAD commit SHA of the PR.
         findings: Deduplicated list of findings.
         stages_available: List of stage names that ran.
+        existing_comments: Already-posted review comments on this PR
+            (from ``GitHubClient.get_existing_review_comments``).
 
     Returns:
         List of API response dicts (one per review batch).
+        Entries with an ``"error"`` key indicate failed batches.
     """
     summary = build_summary(findings, stages_available)
     comments = build_review_comments(findings)
+
+    # Filter out comments already posted (workflow rerun protection)
+    if existing_comments:
+        before = len(comments)
+        comments = filter_already_posted(comments, existing_comments)
+        skipped = before - len(comments)
+        if skipped > 0:
+            print(
+                f"Skipped {skipped} already-posted comment(s).",
+                file=sys.stderr,
+            )
 
     if not comments:
         # Post summary-only review (no inline comments)
@@ -562,8 +616,21 @@ def main() -> None:
         )
         sys.exit(1)
 
-    # Post review
+    # Fetch existing comments to avoid duplicates on reruns
     client = GitHubClient(token=token, api_url=api_url)
+    existing_comments: List[Dict[str, Any]] = []
+    try:
+        existing_comments = client.get_existing_review_comments(
+            owner, repo, args.pr_number
+        )
+    except RuntimeError as e:
+        print(
+            f"Warning: Could not fetch existing comments "
+            f"(duplicate prevention disabled): {e}",
+            file=sys.stderr,
+        )
+
+    # Post review
     responses = post_review(
         client=client,
         owner=owner,
@@ -572,13 +639,18 @@ def main() -> None:
         commit_sha=commit_sha,
         findings=findings,
         stages_available=stages,
+        existing_comments=existing_comments,
     )
 
     # Output result
+    failed = sum(1 for r in responses if "error" in r)
+    succeeded = len(responses) - failed
+
     result = {
         "total_findings": len(findings),
         "total_comments": len(build_review_comments(findings)),
-        "reviews_posted": len(responses),
+        "reviews_posted": succeeded,
+        "reviews_failed": failed,
         "responses": responses,
     }
 
@@ -588,10 +660,20 @@ def main() -> None:
         Path(args.output).write_text(output_json + "\n", encoding="utf-8")
         print(
             f"Review posted: {len(findings)} findings in "
-            f"{len(responses)} review(s). Written to: {args.output}"
+            f"{len(responses)} review(s) ({failed} failed). "
+            f"Written to: {args.output}"
         )
     else:
         print(output_json)
+
+    # Exit non-zero if ALL batches failed — CI should not be green
+    # when no review was actually published.
+    if failed > 0 and succeeded == 0:
+        print(
+            "Error: All review batches failed. No review was posted.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     sys.exit(0)
 
