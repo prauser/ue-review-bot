@@ -817,6 +817,43 @@ class TestPostReview:
         assert "error" not in responses[0]
         assert "error" in responses[1]
 
+    def test_all_filtered_skips_summary_review(self, stage1_findings):
+        """When all comments were already posted, no review is created."""
+        client = self._make_client()
+
+        from scripts.post_review import build_review_comments
+
+        # Build existing comments matching all findings on same commit
+        existing = []
+        for c in build_review_comments(stage1_findings):
+            existing.append({
+                "path": c["path"],
+                "line": c["line"],
+                "body": c["body"],
+                "commit_id": "abc123",
+            })
+
+        responses = post_review(
+            client, "owner", "repo", 1, "abc123", stage1_findings,
+            existing_comments=existing,
+        )
+        assert len(responses) == 1
+        assert "skipped" in responses[0]
+        # No API call should have been made
+        client.create_review.assert_not_called()
+
+    def test_summary_only_api_error_returns_error_dict(self):
+        """Summary-only review API failure should return error dict, not crash."""
+        client = self._make_client()
+        client.create_review.side_effect = RuntimeError("transient 500")
+
+        responses = post_review(
+            client, "owner", "repo", 1, "abc123", [], ["stage1"]
+        )
+        assert len(responses) == 1
+        assert "error" in responses[0]
+        assert "transient 500" in responses[0]["error"]
+
 
 # ---------------------------------------------------------------------------
 # filter_already_posted

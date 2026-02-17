@@ -419,6 +419,7 @@ def post_review(
     comments = build_review_comments(findings)
 
     # Filter out comments already posted (workflow rerun protection)
+    all_filtered = False
     if existing_comments:
         before = len(comments)
         comments = filter_already_posted(comments, existing_comments, commit_sha)
@@ -428,19 +429,37 @@ def post_review(
                 f"Skipped {skipped} already-posted comment(s).",
                 file=sys.stderr,
             )
+        if before > 0 and len(comments) == 0:
+            all_filtered = True
 
     if not comments:
-        # Post summary-only review (no inline comments)
-        resp = client.create_review(
-            owner=owner,
-            repo=repo,
-            pr_number=pr_number,
-            commit_sha=commit_sha,
-            body=summary,
-            comments=[],
-            event="COMMENT",
-        )
-        return [resp]
+        if all_filtered:
+            # All comments were already posted on this commit — skip
+            # posting a duplicate summary-only review to avoid noise.
+            print(
+                "All comments already posted; skipping summary-only review.",
+                file=sys.stderr,
+            )
+            return [{"skipped": "all comments already posted"}]
+
+        # Genuinely no findings — post a clean summary review.
+        try:
+            resp = client.create_review(
+                owner=owner,
+                repo=repo,
+                pr_number=pr_number,
+                commit_sha=commit_sha,
+                body=summary,
+                comments=[],
+                event="COMMENT",
+            )
+            return [resp]
+        except RuntimeError as e:
+            print(
+                f"Error posting summary-only review: {e}",
+                file=sys.stderr,
+            )
+            return [{"error": str(e)}]
 
     batches = split_into_batches(comments)
     responses = []
