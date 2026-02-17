@@ -804,6 +804,31 @@ class TestCollectSourceContents:
         # No source_dir → no path_map entry
         assert abs_path not in path_map
 
+    def test_suffix_remap_rereads_from_source_dir_copy(self, tmp_path):
+        """When an absolute path is readable but NOT under source_dir,
+        content should be re-read from the source_dir copy (not the
+        stale build-tree copy) after suffix-match remapping."""
+        # Simulate: build tree has stale copy, source_dir has current copy
+        build_tree = tmp_path / "build" / "Source"
+        build_tree.mkdir(parents=True)
+        stale_file = build_tree / "Actor.cpp"
+        stale_file.write_text("stale build content")
+
+        source_dir = tmp_path / "repo"
+        (source_dir / "Source").mkdir(parents=True)
+        current_file = source_dir / "Source" / "Actor.cpp"
+        current_file.write_text("current repo content")
+
+        abs_path = str(stale_file)
+        diags = [_make_diag("check", "msg", file_path=abs_path)]
+
+        contents, path_map = _collect_source_contents(diags, source_dir=str(source_dir))
+        assert abs_path in contents
+        assert abs_path in path_map
+        assert path_map[abs_path] == "Source/Actor.cpp"
+        # Content should come from source_dir copy, not the stale build tree
+        assert contents[abs_path] == "current repo content"
+
 
 # ---------------------------------------------------------------------------
 # Byte offset handling tests

@@ -16,7 +16,12 @@ Checks: >
   readability-else-after-return,
   readability-redundant-smartptr-get
 
-# Only check project source headers, not Engine headers
+# Only check project source headers, not Engine headers.
+# NOTE: 'Source/.*' matches any path containing "Source/" — including
+# Engine headers (e.g. Engine/Source/Runtime/...).  LLVM's POSIX ERE
+# does not support negative lookahead, so there is no clean generic
+# regex to exclude Engine paths.  For per-project accuracy, override
+# this with your module name, e.g. 'Source/MyGame/.*'.
 HeaderFilterRegex: 'Source/.*'
 
 WarningsAsErrors: ''

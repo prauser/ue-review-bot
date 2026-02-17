@@ -442,14 +442,26 @@ def _collect_source_contents(
                         path_map[file_path] = str(
                             p.resolve().relative_to(sd.resolve())
                         )
+                        # File is under source_dir — same physical file,
+                        # content already correct.
                     except ValueError:
-                        # Not under source_dir — try suffix matching
+                        # Not under source_dir — try suffix matching.
+                        # When a match is found, re-read from the source_dir
+                        # copy so content is consistent with the remapped path
+                        # (the build-tree copy may be stale or preprocessed).
                         if p.is_absolute():
                             parts = p.parts[1:]
                             for i in range(len(parts)):
                                 suffix = str(Path(*parts[i:]))
-                                if (sd / suffix).is_file():
+                                matched = sd / suffix
+                                if matched.is_file():
                                     path_map[file_path] = suffix
+                                    try:
+                                        contents[file_path] = matched.read_text(
+                                            encoding="utf-8", errors="replace"
+                                        )
+                                    except OSError:
+                                        pass  # keep original content
                                     break
                 continue
             except OSError:
