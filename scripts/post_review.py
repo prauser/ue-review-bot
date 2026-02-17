@@ -466,8 +466,17 @@ def main() -> None:
     findings = load_findings(args.findings)
     findings = deduplicate_findings(findings)
 
-    # Sort by file, then line for consistent output
-    findings.sort(key=lambda f: (f.get("file", ""), f.get("line", 0)))
+    # Sort by file, then line for consistent output.
+    # Coerce line to int — Stage 3 may emit string line numbers and
+    # mixed int/str comparison raises TypeError in Python 3.
+    def _sort_key(f: Dict[str, Any]) -> tuple:
+        try:
+            line = int(f.get("line", 0))
+        except (TypeError, ValueError):
+            line = 0
+        return (f.get("file", ""), line)
+
+    findings.sort(key=_sort_key)
 
     stages = args.stages.split(",") if args.stages else None
 

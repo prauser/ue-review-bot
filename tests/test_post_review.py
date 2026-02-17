@@ -1039,6 +1039,44 @@ class TestCLIDryRun:
         assert "stage2" in result["summary"]
         assert "stage3" in result["summary"]
 
+    def test_dry_run_mixed_int_str_line_values(self, tmp_path):
+        """Mixed int/str line values must not raise TypeError during sort."""
+        findings = [
+            {"file": "Source/B.cpp", "line": 20, "severity": "warning",
+             "rule_id": "logtemp", "message": "int line"},
+            {"file": "Source/A.cpp", "line": "5", "severity": "error",
+             "category": "gc_safety", "message": "string line"},
+            {"file": "Source/A.cpp", "line": None, "severity": "info",
+             "rule_id": "x", "message": "null line"},
+        ]
+        fp = tmp_path / "mixed.json"
+        fp.write_text(json.dumps(findings), encoding="utf-8")
+        output_path = tmp_path / "result.json"
+
+        from scripts.post_review import main
+
+        with patch(
+            "sys.argv",
+            [
+                "post_review",
+                "--findings",
+                str(fp),
+                "--dry-run",
+                "--output",
+                str(output_path),
+            ],
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+
+        result = json.loads(output_path.read_text(encoding="utf-8"))
+        # null-line finding is skipped by build_review_comments
+        assert result["total_comments"] == 2
+        # Sorted: A.cpp line 5, then B.cpp line 20
+        assert result["comments"][0]["path"] == "Source/A.cpp"
+        assert result["comments"][1]["path"] == "Source/B.cpp"
+
 
 # ---------------------------------------------------------------------------
 # CLI validation tests
