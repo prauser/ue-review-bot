@@ -284,6 +284,69 @@ def deduplicate(
     ]
 
 
+def _collect_source_contents(
+    diagnostics: List[Dict[str, Any]],
+    source_dir: Optional[str] = None,
+) -> Dict[str, str]:
+    """Read source files referenced in diagnostics.
+
+    Collects unique file paths from diagnostics and reads their contents.
+    Tries absolute paths first, then falls back to source_dir-relative paths.
+
+    Args:
+        diagnostics: Raw diagnostics from parse_tidy_fixes().
+        source_dir: Optional base directory to resolve relative paths.
+
+    Returns:
+        Mapping of absolute file paths to their contents.
+    """
+    contents: Dict[str, str] = {}
+    seen_paths: set = set()
+
+    for diag in diagnostics:
+        if not isinstance(diag, dict):
+            continue
+        msg_info = diag.get("DiagnosticMessage", {})
+        if not isinstance(msg_info, dict):
+            continue
+
+        file_path = msg_info.get("FilePath", "")
+        if not file_path or file_path in seen_paths:
+            continue
+        seen_paths.add(file_path)
+
+        # Also collect paths from replacements
+        for repl in msg_info.get("Replacements") or []:
+            repl_path = repl.get("FilePath", "")
+            if repl_path:
+                seen_paths.add(repl_path)
+
+    for file_path in seen_paths:
+        if not file_path:
+            continue
+        p = Path(file_path)
+        # Try absolute path first
+        if p.is_file():
+            try:
+                contents[file_path] = p.read_text(encoding="utf-8", errors="replace")
+                continue
+            except OSError:
+                pass
+        # Try relative to source_dir
+        if source_dir:
+            for candidate in [Path(source_dir) / p.name, Path(source_dir) / p]:
+                if candidate.is_file():
+                    try:
+                        contents[file_path] = candidate.read_text(
+                            encoding="utf-8", errors="replace"
+                        )
+                        break
+                    except OSError:
+                        pass
+
+    return contents
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Stage 2 — clang-tidy fixes → suggestion converter"
@@ -304,6 +367,11 @@ def main() -> None:
         help="Path to PVS-Studio report JSON (placeholder — not yet implemented)",
     )
     parser.add_argument(
+        "--source-dir",
+        default=None,
+        help="Base directory for resolving source file paths (for suggestion generation)",
+    )
+    parser.add_argument(
         "--output",
         default=None,
         help="Output JSON file path (default: stdout)",
@@ -320,7 +388,23 @@ def main() -> None:
 
     # Parse clang-tidy fixes
     diagnostics = parse_tidy_fixes(args.tidy_fixes)
-    findings = convert_diagnostics(diagnostics)
+
+    # Load source files for accurate line numbers and suggestion generation
+    source_contents = _collect_source_contents(diagnostics, args.source_dir)
+    if source_contents:
+        print(
+            f"Loaded {len(source_contents)} source file(s) for suggestion generation.",
+            file=sys.stderr,
+        )
+    elif diagnostics:
+        print(
+            "Warning: Could not load any source files. "
+            "Line numbers will use offset//80 fallback and suggestions will be empty. "
+            "Use --source-dir to specify the project root.",
+            file=sys.stderr,
+        )
+
+    findings = convert_diagnostics(diagnostics, source_contents=source_contents)
 
     # Deduplicate against Stage 1
     if args.stage1_results:

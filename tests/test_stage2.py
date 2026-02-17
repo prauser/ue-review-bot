@@ -25,6 +25,7 @@ from scripts.stage2_tidy_to_suggestions import (
     convert_diagnostics,
     deduplicate,
     parse_tidy_fixes,
+    _collect_source_contents,
     _offset_to_line,
     _resolve_path,
     _CHECK_TO_RULE,
@@ -541,6 +542,175 @@ class TestIntegration:
         findings = convert_diagnostics(raw)
         # Should have findings from clang-tidy only
         assert len(findings) == 1
+
+    def test_cli_loads_source_files_for_suggestions(self, tmp_path):
+        """CLI path should load source files and produce suggestions."""
+        import subprocess
+
+        # Create source file on disk
+        source_dir = tmp_path / "Source"
+        source_dir.mkdir()
+        source_file = source_dir / "MyActor.cpp"
+        source_content = "    virtual void BeginPlay();\n"
+        source_file.write_text(source_content)
+
+        abs_path = str(source_file)
+        # Replacement: insert ' override' before the semicolon
+        replacements = [
+            {
+                "FilePath": abs_path,
+                "Offset": len("    virtual void BeginPlay()"),
+                "Length": 0,
+                "ReplacementText": " override",
+            }
+        ]
+        diags = [
+            _make_diag(
+                "modernize-use-override",
+                "annotate this function with 'override'",
+                file_path=abs_path,
+                offset=0,
+                replacements=replacements,
+            ),
+        ]
+
+        fixes_yaml = _make_fixes_yaml(diags)
+        fixes_file = tmp_path / "fixes.yaml"
+        fixes_file.write_text(fixes_yaml)
+
+        output_file = tmp_path / "output.json"
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "scripts.stage2_tidy_to_suggestions",
+                "--tidy-fixes", str(fixes_file),
+                "--output", str(output_file),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+
+        findings = json.loads(output_file.read_text())
+        assert len(findings) == 1
+        # The fix: CLI path should now produce suggestions
+        assert findings[0]["suggestion"] is not None
+        assert "override" in findings[0]["suggestion"]
+        # Line number should be accurate (line 1), not offset//80 fallback
+        assert findings[0]["line"] == 1
+
+    def test_cli_with_source_dir_flag(self, tmp_path):
+        """--source-dir should help resolve source files not at absolute paths."""
+        import subprocess
+
+        # Source file at a known location
+        source_dir = tmp_path / "project" / "Source"
+        source_dir.mkdir(parents=True)
+        source_file = source_dir / "Actor.cpp"
+        source_content = "line1\nline2\nline3\n"
+        source_file.write_text(source_content)
+
+        # Diagnostic references a non-existent absolute path
+        fake_abs = "/nonexistent/project/Source/Actor.cpp"
+        diags = [
+            _make_diag(
+                "some-check", "msg",
+                file_path=fake_abs,
+                offset=6,  # start of "line2" → should be line 2
+            ),
+        ]
+
+        fixes_yaml = _make_fixes_yaml(diags)
+        fixes_file = tmp_path / "fixes.yaml"
+        fixes_file.write_text(fixes_yaml)
+
+        output_file = tmp_path / "output.json"
+        result = subprocess.run(
+            [
+                sys.executable, "-m", "scripts.stage2_tidy_to_suggestions",
+                "--tidy-fixes", str(fixes_file),
+                "--source-dir", str(source_dir),
+                "--output", str(output_file),
+            ],
+            capture_output=True,
+            text=True,
+            cwd=str(Path(__file__).resolve().parent.parent),
+        )
+        assert result.returncode == 0, f"stderr: {result.stderr}"
+
+        findings = json.loads(output_file.read_text())
+        assert len(findings) == 1
+        # With --source-dir, line number should be accurate
+        assert findings[0]["line"] == 2
+
+
+# ---------------------------------------------------------------------------
+# _collect_source_contents tests
+# ---------------------------------------------------------------------------
+
+
+class TestCollectSourceContents:
+    """Tests for _collect_source_contents helper."""
+
+    def test_reads_files_from_absolute_paths(self, tmp_path):
+        source_file = tmp_path / "MyActor.cpp"
+        source_file.write_text("hello\nworld\n")
+        abs_path = str(source_file)
+        diags = [_make_diag("check", "msg", file_path=abs_path)]
+
+        contents = _collect_source_contents(diags)
+        assert abs_path in contents
+        assert contents[abs_path] == "hello\nworld\n"
+
+    def test_empty_diagnostics(self):
+        contents = _collect_source_contents([])
+        assert contents == {}
+
+    def test_nonexistent_files_skipped(self):
+        diags = [_make_diag("check", "msg", file_path="/nonexistent/file.cpp")]
+        contents = _collect_source_contents(diags)
+        assert contents == {}
+
+    def test_source_dir_fallback(self, tmp_path):
+        source_dir = tmp_path / "src"
+        source_dir.mkdir()
+        (source_dir / "Actor.cpp").write_text("content")
+
+        fake_abs = "/nonexistent/Actor.cpp"
+        diags = [_make_diag("check", "msg", file_path=fake_abs)]
+
+        contents = _collect_source_contents(diags, source_dir=str(source_dir))
+        assert fake_abs in contents
+        assert contents[fake_abs] == "content"
+
+    def test_deduplicates_file_paths(self, tmp_path):
+        source_file = tmp_path / "A.cpp"
+        source_file.write_text("data")
+        abs_path = str(source_file)
+
+        diags = [
+            _make_diag("check-a", "msg1", file_path=abs_path),
+            _make_diag("check-b", "msg2", file_path=abs_path),
+        ]
+        contents = _collect_source_contents(diags)
+        assert len(contents) == 1
+
+    def test_collects_replacement_file_paths(self, tmp_path):
+        main_file = tmp_path / "Main.cpp"
+        main_file.write_text("main content")
+        header_file = tmp_path / "Main.h"
+        header_file.write_text("header content")
+
+        replacements = [{"FilePath": str(header_file), "Offset": 0, "Length": 0, "ReplacementText": "x"}]
+        diags = [_make_diag("check", "msg", file_path=str(main_file), replacements=replacements)]
+
+        contents = _collect_source_contents(diags)
+        assert str(main_file) in contents
+        assert str(header_file) in contents
+
+    def test_non_dict_diagnostics_skipped(self):
+        contents = _collect_source_contents(["not a dict", 42])
+        assert contents == {}
 
 
 # ---------------------------------------------------------------------------
