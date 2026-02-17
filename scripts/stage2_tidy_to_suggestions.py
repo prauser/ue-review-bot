@@ -222,6 +222,20 @@ def _extract_suggestion_span(
     start_line = first_diff + 1
     end_line = last_orig + 1
 
+    # Handle pure insertions: when the modification only adds new lines
+    # (e.g., at EOF) without changing existing ones, first_diff goes past
+    # the original line count so start_line > end_line — an invalid range.
+    # Fix by anchoring to the last matching original line so the suggestion
+    # replaces that line with itself plus the new content.
+    if start_line > end_line:
+        if first_diff > 0:
+            first_diff -= 1
+            start_line = first_diff + 1
+            suggestion_lines = mod_lines[first_diff : last_mod + 1]
+            suggestion = "\n".join(suggestion_lines)
+        # After anchoring (or if no anchor: empty original), single-line.
+        return suggestion, start_line, None
+
     if start_line == end_line:
         return suggestion, start_line, None  # single line
     return suggestion, start_line, end_line

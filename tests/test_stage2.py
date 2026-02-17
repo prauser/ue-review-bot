@@ -919,6 +919,63 @@ class TestExtractSuggestionSpan:
         assert end == 4   # lines 2-4 in original are replaced
         assert suggestion == "new_single"
 
+    def test_insert_at_eof(self):
+        """Pure insertion at EOF should not produce inverted range."""
+        original = "line1\nline2\n"
+        modified = "line1\nline2\nnewline\n"
+        suggestion, start, end = _extract_suggestion_span(original, modified)
+        # Should anchor to last original line (line2) and expand
+        assert start <= 2
+        assert end is None  # single-line (anchored)
+        assert "newline" in suggestion
+        # The anchor line should also be in the suggestion
+        assert "line2" in suggestion
+
+    def test_insert_single_line_at_eof(self):
+        """Appending one line to a single-line file."""
+        original = "A\n"
+        modified = "A\nB\n"
+        suggestion, start, end = _extract_suggestion_span(original, modified)
+        assert start == 1  # anchored to line 1
+        assert end is None
+        assert suggestion == "A\nB"
+
+    def test_insert_multiple_lines_at_eof(self):
+        """Appending multiple lines should anchor to last original line."""
+        original = "A\nB\n"
+        modified = "A\nB\nC\nD\n"
+        suggestion, start, end = _extract_suggestion_span(original, modified)
+        assert start == 2  # anchored to line 2 ("B")
+        assert end is None
+        assert suggestion == "B\nC\nD"
+
+    def test_insert_into_empty_original(self):
+        """Inserting into an empty file (edge case: no anchor available)."""
+        original = ""
+        modified = "new_content\n"
+        suggestion, start, end = _extract_suggestion_span(original, modified)
+        assert suggestion is not None
+        assert start == 1
+        assert end is None
+        assert "new_content" in suggestion
+
+    def test_start_never_exceeds_end(self):
+        """Regression: start_line must never exceed end_line."""
+        # Various insertion patterns
+        cases = [
+            ("X\n", "X\nY\n"),
+            ("A\nB\n", "A\nB\nC\n"),
+            ("", "NEW\n"),
+            ("H\n", "H\nI\nJ\nK\n"),
+        ]
+        for orig, mod in cases:
+            suggestion, start, end = _extract_suggestion_span(orig, mod)
+            if end is not None:
+                assert start <= end, (
+                    f"Inverted range: start={start} > end={end} "
+                    f"for orig={orig!r}, mod={mod!r}"
+                )
+
 
 # ---------------------------------------------------------------------------
 # path_map integration tests
