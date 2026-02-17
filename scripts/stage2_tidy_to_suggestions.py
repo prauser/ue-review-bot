@@ -177,6 +177,22 @@ def parse_tidy_fixes(
     return data.get("Diagnostics", []) or []
 
 
+def _join_suggestion(lines: List[str]) -> str:
+    """Join suggestion lines, preserving blank-line replacements.
+
+    ``"\\n".join([""])`` produces ``""``, which is indistinguishable
+    from ``"\\n".join([])`` (pure deletion).  This helper adds a
+    trailing newline when the list is non-empty but joins to an empty
+    string, so downstream code (GitHub suggestion blocks) can
+    distinguish "replace with blank line(s)" from "delete entirely".
+    """
+    text = "\n".join(lines)
+    if not text and lines:
+        # Non-empty list of all-blank lines → blank-line replacement.
+        text = "\n"
+    return text
+
+
 def _extract_suggestion_span(
     original: str,
     modified: str,
@@ -218,7 +234,7 @@ def _extract_suggestion_span(
 
     # Extract suggestion text (modified lines in the changed range)
     suggestion_lines = mod_lines[first_diff : last_mod + 1]
-    suggestion = "\n".join(suggestion_lines)
+    suggestion = _join_suggestion(suggestion_lines)
 
     # Convert to 1-based line numbers (original file's lines)
     start_line = first_diff + 1
@@ -235,13 +251,13 @@ def _extract_suggestion_span(
             first_diff -= 1
             start_line = first_diff + 1
             suggestion_lines = mod_lines[first_diff : last_mod + 1]
-            suggestion = "\n".join(suggestion_lines)
+            suggestion = _join_suggestion(suggestion_lines)
         elif orig_lines:
             # BOF insertion (first_diff == 0): anchor to the first original
             # line by extending the mod range forward to include the
             # matching anchor line that tail-matching already consumed.
             suggestion_lines = mod_lines[first_diff : last_mod + 2]
-            suggestion = "\n".join(suggestion_lines)
+            suggestion = _join_suggestion(suggestion_lines)
         # After anchoring (or if no anchor: empty original), single-line.
         return suggestion, start_line, None
 

@@ -1005,6 +1005,26 @@ class TestExtractSuggestionSpan:
         assert end is None
         assert suggestion == ""
 
+    def test_replace_with_blank_line(self):
+        """Replacing a line with a blank line should NOT be treated as deletion."""
+        original = "A\nB\nC\n"
+        modified = "A\n\nC\n"
+        suggestion, start, end = _extract_suggestion_span(original, modified)
+        assert start == 2
+        assert end is None
+        # Must be distinguishable from pure deletion ("")
+        assert suggestion == "\n"
+
+    def test_delete_vs_blank_line_distinct(self):
+        """Pure deletion and blank-line replacement must produce different values."""
+        # Pure deletion: remove line B entirely
+        del_suggestion, _, _ = _extract_suggestion_span("A\nB\nC\n", "A\nC\n")
+        # Blank-line replacement: replace B with empty line
+        blank_suggestion, _, _ = _extract_suggestion_span("A\nB\nC\n", "A\n\nC\n")
+        assert del_suggestion != blank_suggestion
+        assert del_suggestion == ""
+        assert blank_suggestion == "\n"
+
     def test_insert_at_eof(self):
         """Pure insertion at EOF should not produce inverted range."""
         original = "line1\nline2\n"
