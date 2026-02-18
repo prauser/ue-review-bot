@@ -1657,3 +1657,98 @@ class TestReviewFileChunkedBudget:
         # only 1 chunk should succeed (2nd would push to 30000 > 20000)
         assert call_count == 1
         assert budget.files_reviewed == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: _is_findings_array schema validation (review comment fix)
+# ---------------------------------------------------------------------------
+
+class TestIsFindingsArraySchema:
+    """_is_findings_array should require finding-like dict elements."""
+
+    def test_dict_with_note_only_rejected(self):
+        from scripts.stage3_llm_reviewer import _is_findings_array
+        assert _is_findings_array([{"note": "some explanation"}]) is False
+
+    def test_dict_with_line_accepted(self):
+        from scripts.stage3_llm_reviewer import _is_findings_array
+        assert _is_findings_array([{"line": 10, "message": "issue"}]) is True
+
+    def test_dict_with_message_only_accepted(self):
+        from scripts.stage3_llm_reviewer import _is_findings_array
+        assert _is_findings_array([{"message": "some finding"}]) is True
+
+    def test_empty_array_accepted(self):
+        from scripts.stage3_llm_reviewer import _is_findings_array
+        assert _is_findings_array([]) is True
+
+    def test_parse_skips_note_array_to_findings(self):
+        """parse_llm_response should skip [{"note":...}] and find real findings."""
+        from scripts.stage3_llm_reviewer import parse_llm_response
+        text = (
+            '[{"note": "참고사항입니다"}] '
+            '[{"file":"a.cpp","line":5,"message":"issue"}]'
+        )
+        result = parse_llm_response(text)
+        assert len(result) == 1
+        assert result[0]["file"] == "a.cpp"
+
+
+# ---------------------------------------------------------------------------
+# Tests: load_exclude_findings file type validation (review comment fix)
+# ---------------------------------------------------------------------------
+
+class TestLoadExcludeFindingsFileType:
+    """Non-string file values should be skipped, not crash."""
+
+    def test_file_as_list_skipped(self, tmp_path):
+        from scripts.stage3_llm_reviewer import load_exclude_findings
+        data = [
+            {"file": ["a.cpp"], "line": 10},
+            {"file": "b.cpp", "line": 20},
+        ]
+        f = tmp_path / "exclude.json"
+        f.write_text(json.dumps(data))
+        result = load_exclude_findings([str(f)])
+        assert ("b.cpp", 20) in result
+        assert len(result) == 1
+
+    def test_file_as_dict_skipped(self, tmp_path):
+        from scripts.stage3_llm_reviewer import load_exclude_findings
+        data = [{"file": {"name": "a.cpp"}, "line": 5}]
+        f = tmp_path / "exclude.json"
+        f.write_text(json.dumps(data))
+        result = load_exclude_findings([str(f)])
+        assert len(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: can_review_file uses worst-case output tokens (review comment fix)
+# ---------------------------------------------------------------------------
+
+class TestCanReviewFileCostGate:
+    """Cost check should use max output tokens, not average."""
+
+    def test_cost_gate_uses_max_output(self):
+        from scripts.utils.token_budget import (
+            BudgetTracker, estimate_cost, _MAX_OUTPUT_PER_CALL,
+        )
+        # Set a tight cost budget that would pass with 1000 output tokens
+        # but should fail with 4096 output tokens
+        input_tokens = 50_000
+        cost_with_max = estimate_cost(input_tokens, _MAX_OUTPUT_PER_CALL)
+        cost_with_avg = estimate_cost(input_tokens, 1_000)
+        # Budget between the two estimates — should reject with max output
+        tight_budget = (cost_with_avg + cost_with_max) / 2
+
+        bt = BudgetTracker(max_tokens=1_000_000, max_cost=tight_budget)
+        assert bt.can_review_file(input_tokens) is False
+
+    def test_cost_gate_accepts_within_budget(self):
+        from scripts.utils.token_budget import (
+            BudgetTracker, estimate_cost, _MAX_OUTPUT_PER_CALL,
+        )
+        input_tokens = 1_000
+        cost_with_max = estimate_cost(input_tokens, _MAX_OUTPUT_PER_CALL)
+        bt = BudgetTracker(max_tokens=1_000_000, max_cost=cost_with_max * 2)
+        assert bt.can_review_file(input_tokens) is True

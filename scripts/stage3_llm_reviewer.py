@@ -225,6 +225,8 @@ def load_exclude_findings(file_paths: List[str]) -> Set[Tuple[str, int]]:
                 if not isinstance(finding, dict):
                     continue
                 file = finding.get("file", "")
+                if not isinstance(file, str):
+                    continue
                 try:
                     line = int(finding.get("line", 0))
                 except (TypeError, ValueError):
@@ -304,7 +306,7 @@ def parse_llm_response(response_text: str) -> List[Dict[str, Any]]:
         try:
             data, end_idx = decoder.raw_decode(text, start)
             if isinstance(data, list):
-                if any(isinstance(item, dict) for item in data):
+                if _is_findings_array(data) and len(data) > 0:
                     return data
                 if len(data) == 0 and first_empty is None:
                     first_empty = data
@@ -343,12 +345,17 @@ def _is_findings_array(data: list) -> bool:
     """Check if a parsed JSON array looks like a findings array.
 
     Accepts empty arrays (valid "no issues" response) and arrays where
-    at least one element is a dict (findings objects).  Rejects arrays
-    of scalars like ``[1]`` or ``["text"]`` that are not findings.
+    at least one element is a dict matching the minimum finding schema
+    (must have ``line`` or ``message`` key).  Rejects arrays of scalars,
+    and dict arrays that lack finding fields (e.g. ``[{"note":"..."}]``).
     """
     if len(data) == 0:
         return True
-    return any(isinstance(item, dict) for item in data)
+    _FINDING_KEYS = {"line", "message"}
+    return any(
+        isinstance(item, dict) and bool(_FINDING_KEYS & item.keys())
+        for item in data
+    )
 
 
 def _try_parse_json_array(text: str) -> Optional[List[Dict[str, Any]]]:

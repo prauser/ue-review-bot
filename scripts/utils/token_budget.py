@@ -30,6 +30,8 @@ _INPUT_COST_PER_TOKEN: float = 3.0 / 1_000_000
 _OUTPUT_COST_PER_TOKEN: float = 15.0 / 1_000_000
 # Assumed average output tokens per file review call.
 _ESTIMATED_OUTPUT_PER_FILE: int = 1_000
+# Worst-case output tokens (matches DEFAULT_MAX_TOKENS in stage3_llm_reviewer).
+_MAX_OUTPUT_PER_CALL: int = 4_096
 
 # Skip patterns for files that should never reach Stage 3.
 _SKIP_PATTERNS = [
@@ -215,6 +217,10 @@ class BudgetTracker:
     def can_review_file(self, estimated_input_tokens: int) -> bool:
         """Check if there is enough budget remaining to review a file.
 
+        Uses the worst-case output token limit (``_MAX_OUTPUT_PER_CALL``)
+        for the cost check so that a single long response cannot exceed
+        the cost cap.
+
         Args:
             estimated_input_tokens: Estimated input tokens for the file.
 
@@ -223,7 +229,9 @@ class BudgetTracker:
         """
         if self.total_input_tokens + estimated_input_tokens > self.max_tokens:
             return False
-        estimated_cost = self.total_cost + estimate_cost(estimated_input_tokens)
+        estimated_cost = self.total_cost + estimate_cost(
+            estimated_input_tokens, _MAX_OUTPUT_PER_CALL
+        )
         if estimated_cost > self.max_cost:
             return False
         return True
