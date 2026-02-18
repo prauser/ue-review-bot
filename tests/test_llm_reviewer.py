@@ -1270,3 +1270,59 @@ class TestChunkSkipRecording:
 
         # With BUDGET_PER_FILE=50, chunks should be skipped and recorded
         assert budget.files_skipped_budget >= 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: large hunk sub-chunks retain @@ hunk header
+# ---------------------------------------------------------------------------
+
+class TestSubChunkHunkHeader:
+    """Every sub-chunk from a large hunk must include the @@ header."""
+
+    def test_all_sub_chunks_have_hunk_header(self):
+        """When a single hunk is split by lines, each sub-chunk must keep
+        both the file header and the @@ hunk header."""
+        from scripts.utils.token_budget import chunk_diff
+
+        # Build a diff with one enormous hunk that will need line splitting
+        file_header = "--- a/Big.cpp\n+++ b/Big.cpp\n"
+        hunk_header = "@@ -1,5 +1,205 @@ void BigFunction()\n"
+        # 200 added lines — large enough to force splitting at low budget
+        body_lines = "".join(f"+// added line {i}\n" for i in range(200))
+        diff = file_header + hunk_header + body_lines
+
+        # Use a small budget so the hunk must be split into multiple sub-chunks
+        chunks = chunk_diff(diff, max_tokens=200)
+        assert len(chunks) > 1, "Expected multiple sub-chunks"
+
+        for i, chunk in enumerate(chunks):
+            assert "--- a/Big.cpp" in chunk, (
+                f"Sub-chunk {i} missing file header"
+            )
+            assert "@@ -1,5 +1,205 @@ void BigFunction()" in chunk, (
+                f"Sub-chunk {i} missing @@ hunk header"
+            )
+
+    def test_sub_chunk_body_content_preserved(self):
+        """All body lines should be present across the sub-chunks."""
+        from scripts.utils.token_budget import chunk_diff
+
+        file_header = "--- a/F.h\n+++ b/F.h\n"
+        hunk_header = "@@ -10,3 +10,103 @@\n"
+        lines = [f"+line_{i}" for i in range(100)]
+        body = "\n".join(lines) + "\n"
+        diff = file_header + hunk_header + body
+
+        chunks = chunk_diff(diff, max_tokens=150)
+        assert len(chunks) > 1
+
+        # Collect all body content (strip headers from each chunk)
+        all_body = ""
+        for chunk in chunks:
+            # Remove file header and hunk header to get just body
+            after_hunk = chunk.split("@@\n", 1)
+            if len(after_hunk) > 1:
+                all_body += after_hunk[1]
+
+        for i in range(100):
+            assert f"+line_{i}" in all_body, f"Missing +line_{i} in sub-chunks"

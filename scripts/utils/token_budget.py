@@ -134,8 +134,19 @@ def chunk_diff(file_diff: str, max_tokens: int = BUDGET_PER_FILE) -> List[str]:
                 chunks.append(current)
             # If single hunk exceeds budget, split it further.
             if estimate_tokens(header + hunk) > max_tokens:
-                sub_chunks = _split_by_lines(header + hunk, max_tokens)
-                chunks.extend(sub_chunks)
+                # Extract @@ header line so every sub-chunk retains it.
+                hunk_first_nl = hunk.find("\n")
+                if hunk_first_nl != -1:
+                    hunk_hdr = hunk[: hunk_first_nl + 1]  # includes newline
+                    hunk_body = hunk[hunk_first_nl + 1 :]
+                else:
+                    hunk_hdr = hunk
+                    hunk_body = ""
+                prefix = header + hunk_hdr
+                prefix_tokens = estimate_tokens(prefix)
+                body_budget = max(max_tokens - prefix_tokens, 100)
+                sub_chunks = _split_by_lines(hunk_body, body_budget)
+                chunks.extend(prefix + sc for sc in sub_chunks)
                 current = header
             else:
                 current = header + hunk
