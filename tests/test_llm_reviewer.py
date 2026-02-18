@@ -1207,3 +1207,66 @@ class TestWrapperOverheadAccounting:
 
         # At least one chunk should have been sent to the API
         assert mock_api.called
+
+
+# ---------------------------------------------------------------------------
+# Tests: _split_by_lines min token per line (review comment fix)
+# ---------------------------------------------------------------------------
+
+
+class TestSplitByLinesMinToken:
+    """Short lines must still contribute tokens to prevent oversized chunks."""
+
+    def test_many_short_lines_split(self):
+        """Hundreds of 1-char lines must not all land in one chunk."""
+        from scripts.utils.token_budget import _split_by_lines
+
+        text = "\n".join(["+{"] * 500)  # 500 very short lines
+        chunks = _split_by_lines(text, max_tokens=100)
+        # With min 2 tokens/line, 100 token budget → ~50 lines per chunk
+        assert len(chunks) > 1
+        for chunk in chunks:
+            # Each chunk should be reasonably bounded
+            lines_in_chunk = chunk.count("\n") + 1
+            assert lines_in_chunk <= 100  # generous upper bound
+
+    def test_single_line_still_works(self):
+        from scripts.utils.token_budget import _split_by_lines
+
+        text = "single line"
+        chunks = _split_by_lines(text, max_tokens=100)
+        assert len(chunks) == 1
+        assert chunks[0] == text
+
+
+# ---------------------------------------------------------------------------
+# Tests: chunk skip records budget.record_skip (review comment fix)
+# ---------------------------------------------------------------------------
+
+
+class TestChunkSkipRecording:
+    """Skipped chunks due to per-file budget must be recorded."""
+
+    @patch("scripts.stage3_llm_reviewer.call_anthropic_api")
+    @patch("scripts.stage3_llm_reviewer.BUDGET_PER_FILE", 50)
+    def test_oversize_chunk_records_skip(self, mock_api):
+        """When a chunk exceeds BUDGET_PER_FILE, files_skipped_budget increments."""
+        mock_api.return_value = ("[]", 10, 5)
+
+        budget = BudgetTracker(max_tokens=500_000, max_cost=10.0)
+
+        # Build a large diff that will produce chunks exceeding the tiny budget
+        big_diff = "@@ -1,1 +1,100 @@\n" + "\n".join(
+            [f"+{'x' * 300}" for _ in range(100)]
+        )
+
+        findings = review_file(
+            "Source/Big.cpp",
+            big_diff,
+            "system",
+            set(),
+            budget,
+        )
+
+        # With BUDGET_PER_FILE=50, chunks should be skipped and recorded
+        assert budget.files_skipped_budget >= 1

@@ -569,6 +569,7 @@ def review_file(
                     "Chunk %d for %s exceeds per-file budget (%d > %d), skipping",
                     i, file_path, chunk_tokens, BUDGET_PER_FILE,
                 )
+                budget.record_skip()
                 continue
             if not budget.can_review_file(chunk_tokens):
                 logger.warning(

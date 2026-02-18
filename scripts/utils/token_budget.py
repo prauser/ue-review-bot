@@ -149,14 +149,20 @@ def chunk_diff(file_diff: str, max_tokens: int = BUDGET_PER_FILE) -> List[str]:
 
 
 def _split_by_lines(text: str, max_tokens: int) -> List[str]:
-    """Split text into chunks by lines, keeping each under max_tokens."""
+    """Split text into chunks by lines, keeping each under max_tokens.
+
+    Each line is counted as at least 1 token (even if ``estimate_tokens``
+    returns 0 for very short lines) plus 1 token for the newline separator
+    so that many short lines don't accumulate into an oversized chunk.
+    """
     lines = text.split("\n")
     chunks: List[str] = []
     current_lines: List[str] = []
     current_tokens = 0
 
     for line in lines:
-        line_tokens = estimate_tokens(line)
+        # Minimum 1 token per line + 1 for the newline join cost
+        line_tokens = max(estimate_tokens(line), 1) + 1
         if current_tokens + line_tokens > max_tokens and current_lines:
             chunks.append("\n".join(current_lines))
             current_lines = []
