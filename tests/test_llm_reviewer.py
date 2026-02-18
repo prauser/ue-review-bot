@@ -1502,3 +1502,66 @@ class TestApiResponseJsonParseError:
                     "system", "user",
                     api_key="test-key",
                 )
+
+
+# ---------------------------------------------------------------------------
+# Tests: empty file field fallback (review comment fix)
+# ---------------------------------------------------------------------------
+
+class TestValidateFindingEmptyFile:
+    """Empty or whitespace-only file fields should fall back to file_path."""
+
+    def test_empty_string_uses_fallback(self):
+        from scripts.stage3_llm_reviewer import validate_finding
+        result = validate_finding({"file": "", "line": 1}, "fallback.cpp")
+        assert result["file"] == "fallback.cpp"
+
+    def test_whitespace_only_uses_fallback(self):
+        from scripts.stage3_llm_reviewer import validate_finding
+        result = validate_finding({"file": "   ", "line": 1}, "fallback.cpp")
+        assert result["file"] == "fallback.cpp"
+
+    def test_none_uses_fallback(self):
+        from scripts.stage3_llm_reviewer import validate_finding
+        result = validate_finding({"file": None, "line": 1}, "fallback.cpp")
+        assert result["file"] == "fallback.cpp"
+
+    def test_valid_file_preserved(self):
+        from scripts.stage3_llm_reviewer import validate_finding
+        result = validate_finding({"file": "Source/A.cpp", "line": 1}, "fallback.cpp")
+        assert result["file"] == "Source/A.cpp"
+
+
+# ---------------------------------------------------------------------------
+# Tests: empty array not immediately confirmed in bracket scan
+# ---------------------------------------------------------------------------
+
+class TestParseResponseEmptyArrayDeferred:
+    """Bracket scan should prefer dict-containing arrays over empty ones."""
+
+    def test_empty_array_before_findings(self):
+        from scripts.stage3_llm_reviewer import parse_llm_response
+        text = '참고 [] 그리고 [{"file":"a.cpp","line":1,"message":"issue"}]'
+        result = parse_llm_response(text)
+        assert len(result) == 1
+        assert result[0]["file"] == "a.cpp"
+
+    def test_only_empty_array_returns_empty(self):
+        """If the only array is [], return it as valid no-findings."""
+        from scripts.stage3_llm_reviewer import parse_llm_response
+        result = parse_llm_response("결과: []")
+        assert result == []
+
+    def test_multiple_empty_arrays_then_findings(self):
+        from scripts.stage3_llm_reviewer import parse_llm_response
+        text = '[] [] [{"file":"b.h","line":5,"message":"fix"}]'
+        result = parse_llm_response(text)
+        assert len(result) == 1
+        assert result[0]["file"] == "b.h"
+
+    def test_scalar_and_empty_arrays_then_findings(self):
+        from scripts.stage3_llm_reviewer import parse_llm_response
+        text = '[1, 2] [] [{"file":"c.cpp","line":3,"message":"m"}]'
+        result = parse_llm_response(text)
+        assert len(result) == 1
+        assert result[0]["file"] == "c.cpp"

@@ -291,20 +291,30 @@ def parse_llm_response(response_text: str) -> List[Dict[str, Any]]:
     # Strategy 2: Try every '[' position to find a valid JSON array.
     # This avoids false matches like "[주의]" before the real array.
     # Use raw_decode to consume exactly one JSON value, ignoring trailing text.
-    # Only accept arrays that contain at least one dict element (findings schema).
+    # Prefer arrays containing dict elements; remember the first empty array
+    # as a fallback (valid "no issues" response) but keep scanning for a
+    # non-empty findings array.
     decoder = json.JSONDecoder()
     pos = 0
+    first_empty: Optional[list] = None
     while True:
         start = text.find("[", pos)
         if start == -1:
             break
         try:
             data, end_idx = decoder.raw_decode(text, start)
-            if isinstance(data, list) and _is_findings_array(data):
-                return data
+            if isinstance(data, list):
+                if any(isinstance(item, dict) for item in data):
+                    return data
+                if len(data) == 0 and first_empty is None:
+                    first_empty = data
         except (json.JSONDecodeError, ValueError):
             pass
         pos = start + 1
+
+    # No dict-containing array found; return remembered empty array or []
+    if first_empty is not None:
+        return first_empty
 
     logger.warning("No JSON array found in LLM response")
     return []
@@ -372,7 +382,7 @@ def validate_finding(finding: Dict[str, Any], file_path: str) -> Dict[str, Any]:
     # Force str() to prevent unhashable types (e.g. list) in downstream
     # set lookups like filter_excluded().
     raw_file = finding.get("file")
-    normalized["file"] = str(raw_file) if isinstance(raw_file, str) else file_path
+    normalized["file"] = raw_file if isinstance(raw_file, str) and raw_file.strip() else file_path
 
     # Line numbers — coerce to int
     try:
