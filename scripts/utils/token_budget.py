@@ -1,0 +1,240 @@
+#!/usr/bin/env python3
+"""Token budget management for Stage 3 LLM reviewer.
+
+Controls per-PR and per-file token budgets to prevent excessive API costs.
+Provides utilities for estimating token usage and chunking diffs by hunk
+boundaries.
+
+Budget constants:
+    BUDGET_PER_PR  = 100_000 input tokens
+    BUDGET_PER_FILE = 20_000 input tokens
+    COST_LIMIT_PER_PR = 2.00 USD
+"""
+
+from __future__ import annotations
+
+import re
+from typing import List
+
+# ---------------------------------------------------------------------------
+# Budget constants
+# ---------------------------------------------------------------------------
+
+BUDGET_PER_PR: int = 100_000  # max input tokens per PR
+BUDGET_PER_FILE: int = 20_000  # max input tokens per file
+COST_LIMIT_PER_PR: float = 2.00  # max USD per PR
+
+# Approximate input token cost for claude-sonnet-4-5 ($3 per 1M input tokens).
+_INPUT_COST_PER_TOKEN: float = 3.0 / 1_000_000
+# Approximate output token cost ($15 per 1M output tokens).
+_OUTPUT_COST_PER_TOKEN: float = 15.0 / 1_000_000
+# Assumed average output tokens per file review call.
+_ESTIMATED_OUTPUT_PER_FILE: int = 1_000
+
+# Skip patterns for files that should never reach Stage 3.
+_SKIP_PATTERNS = [
+    r"(^|/)ThirdParty/",
+    r"\.(generated|gen)\.",
+    r"\.generated\.h$",
+    r"\.pb\.(h|cc)$",
+    r"(^|/)Intermediate/",
+]
+_SKIP_RE = [re.compile(p, re.IGNORECASE) for p in _SKIP_PATTERNS]
+
+
+def estimate_tokens(text: str) -> int:
+    """Conservatively estimate token count for a text string.
+
+    Uses ~3 characters per token as a conservative estimate (actual ratio
+    is typically 3.5-4 for code).
+
+    Args:
+        text: Input text to estimate.
+
+    Returns:
+        Estimated token count.
+    """
+    return len(text) // 3
+
+
+def estimate_cost(input_tokens: int, output_tokens: int = _ESTIMATED_OUTPUT_PER_FILE) -> float:
+    """Estimate USD cost for an API call.
+
+    Args:
+        input_tokens: Number of input tokens.
+        output_tokens: Number of output tokens (default: estimated average).
+
+    Returns:
+        Estimated cost in USD.
+    """
+    return (input_tokens * _INPUT_COST_PER_TOKEN) + (output_tokens * _OUTPUT_COST_PER_TOKEN)
+
+
+def should_skip_file(file_path: str) -> bool:
+    """Check if a file should be skipped by Stage 3.
+
+    Defensive duplicate of gate filtering — catches auto-generated and
+    third-party files that shouldn't consume LLM budget.
+
+    Args:
+        file_path: File path to check.
+
+    Returns:
+        True if the file should be skipped.
+    """
+    for pattern in _SKIP_RE:
+        if pattern.search(file_path):
+            return True
+    return False
+
+
+def chunk_diff(file_diff: str, max_tokens: int = BUDGET_PER_FILE) -> List[str]:
+    """Split a file diff into chunks that fit within token budget.
+
+    Splits on @@ hunk headers first.  If a single hunk exceeds
+    ``max_tokens``, it is further split into smaller line-based chunks.
+
+    Args:
+        file_diff: Full unified diff text for a single file.
+        max_tokens: Maximum tokens per chunk.
+
+    Returns:
+        List of diff text chunks, each within the token budget.
+    """
+    if estimate_tokens(file_diff) <= max_tokens:
+        return [file_diff]
+
+    # Split by hunk headers (@@ ... @@)
+    hunk_pattern = re.compile(r"^(@@\s.*?@@.*)", re.MULTILINE)
+    parts = hunk_pattern.split(file_diff)
+
+    # parts[0] is the diff header (before first @@).
+    # Then alternating: hunk_header, hunk_content, hunk_header, hunk_content ...
+    header = parts[0] if parts else ""
+    hunks: List[str] = []
+
+    i = 1
+    while i < len(parts):
+        hunk_header = parts[i]
+        hunk_body = parts[i + 1] if i + 1 < len(parts) else ""
+        hunks.append(hunk_header + hunk_body)
+        i += 2
+
+    if not hunks:
+        # No hunk headers found — split by lines as fallback.
+        return _split_by_lines(file_diff, max_tokens)
+
+    chunks: List[str] = []
+    current = header
+
+    for hunk in hunks:
+        combined = current + hunk
+        if estimate_tokens(combined) > max_tokens:
+            if current.strip() and current != header:
+                chunks.append(current)
+            # If single hunk exceeds budget, split it further.
+            if estimate_tokens(header + hunk) > max_tokens:
+                sub_chunks = _split_by_lines(header + hunk, max_tokens)
+                chunks.extend(sub_chunks)
+                current = header
+            else:
+                current = header + hunk
+        else:
+            current = combined
+
+    if current.strip() and current != header:
+        chunks.append(current)
+
+    return chunks if chunks else [file_diff]
+
+
+def _split_by_lines(text: str, max_tokens: int) -> List[str]:
+    """Split text into chunks by lines, keeping each under max_tokens."""
+    lines = text.split("\n")
+    chunks: List[str] = []
+    current_lines: List[str] = []
+    current_tokens = 0
+
+    for line in lines:
+        line_tokens = estimate_tokens(line)
+        if current_tokens + line_tokens > max_tokens and current_lines:
+            chunks.append("\n".join(current_lines))
+            current_lines = []
+            current_tokens = 0
+        current_lines.append(line)
+        current_tokens += line_tokens
+
+    if current_lines:
+        chunks.append("\n".join(current_lines))
+
+    return chunks
+
+
+class BudgetTracker:
+    """Tracks cumulative token usage and cost across a PR review session.
+
+    Usage:
+        tracker = BudgetTracker()
+        if tracker.can_review_file(estimated_tokens):
+            # ... call API ...
+            tracker.record_usage(input_tokens, output_tokens)
+        else:
+            # skip file — budget exhausted
+    """
+
+    def __init__(
+        self,
+        max_tokens: int = BUDGET_PER_PR,
+        max_cost: float = COST_LIMIT_PER_PR,
+    ) -> None:
+        self.max_tokens = max_tokens
+        self.max_cost = max_cost
+        self.total_input_tokens = 0
+        self.total_output_tokens = 0
+        self.total_cost = 0.0
+        self.files_reviewed = 0
+        self.files_skipped_budget = 0
+
+    def can_review_file(self, estimated_input_tokens: int) -> bool:
+        """Check if there is enough budget remaining to review a file.
+
+        Args:
+            estimated_input_tokens: Estimated input tokens for the file.
+
+        Returns:
+            True if the file can be reviewed within budget.
+        """
+        if self.total_input_tokens + estimated_input_tokens > self.max_tokens:
+            return False
+        estimated_cost = self.total_cost + estimate_cost(estimated_input_tokens)
+        if estimated_cost > self.max_cost:
+            return False
+        return True
+
+    def record_usage(self, input_tokens: int, output_tokens: int) -> None:
+        """Record actual token usage after an API call.
+
+        Args:
+            input_tokens: Actual input tokens used.
+            output_tokens: Actual output tokens used.
+        """
+        self.total_input_tokens += input_tokens
+        self.total_output_tokens += output_tokens
+        self.total_cost += estimate_cost(input_tokens, output_tokens)
+        self.files_reviewed += 1
+
+    def record_skip(self) -> None:
+        """Record that a file was skipped due to budget exhaustion."""
+        self.files_skipped_budget += 1
+
+    def summary(self) -> dict:
+        """Return a summary dict of budget usage."""
+        return {
+            "total_input_tokens": self.total_input_tokens,
+            "total_output_tokens": self.total_output_tokens,
+            "total_cost_usd": round(self.total_cost, 4),
+            "files_reviewed": self.files_reviewed,
+            "files_skipped_budget": self.files_skipped_budget,
+            "budget_remaining_tokens": self.max_tokens - self.total_input_tokens,
+            "budget_remaining_usd": round(self.max_cost - self.total_cost, 4),
+        }

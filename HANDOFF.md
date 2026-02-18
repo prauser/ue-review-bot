@@ -15,6 +15,7 @@
 - ✅ **Step 3 완료** (Stage 1 — regex 패턴 매칭 + clang-format suggestion)
 - ✅ **Step 4 완료** (PR 코멘트 게시 — post_review + gh_api 확장)
 - ✅ **Step 5 완료** (Stage 2 — clang-tidy 정적 분석)
+- ✅ **Step 6 완료** (Stage 3 — LLM 시맨틱 리뷰)
 
 **전체 계획:** `PLAN.md` 참조
 
@@ -307,10 +308,74 @@ python -m scripts.stage2_tidy_to_suggestions \
 
 ---
 
-## 🔜 다음 작업: Step 6
+## ✅ 완료된 작업: Step 6
 
-### Step 6: Stage 3 — LLM 리뷰
+### Step 6: Stage 3 — LLM 시맨틱 리뷰
+
 **상세 스펙:** `docs/steps/STEP6_STAGE3.md`
+**브랜치:** `claude/fix-handoff-state-z27rd`
+**상태:** 커밋/푸시 완료
+
+#### 생성된 파일 (3개)
+
+| 파일 | 설명 |
+|------|------|
+| `scripts/utils/token_budget.py` | 토큰 예산 관리 (PR당 100K 토큰, 파일당 20K, $2 한도) |
+| `scripts/stage3_llm_reviewer.py` | Anthropic API 기반 시맨틱 코드 리뷰 |
+| `tests/test_llm_reviewer.py` | mock API 테스트 (81개) |
+
+#### 주요 구현 사항
+
+**`scripts/utils/token_budget.py`:**
+- `estimate_tokens()` — 보수적 토큰 추정 (len // 3)
+- `estimate_cost()` — USD 비용 추정 (Sonnet 4.5 기준)
+- `should_skip_file()` — ThirdParty, generated, protobuf, Intermediate 파일 스킵
+- `chunk_diff()` — @@ hunk 기준 분할, 초과 시 라인 단위 분할
+- `BudgetTracker` 클래스 — PR 세션 내 누적 토큰/비용 추적
+
+**`scripts/stage3_llm_reviewer.py`:**
+- `build_system_prompt()` — compile_commands.json 유무에 따라 clang-tidy 대체 섹션 동적 포함
+- `build_user_message()` — 파일별 diff + 선택적 전체 소스 컨텍스트
+- `parse_llm_response()` — markdown 코드 펜스 처리, JSON 배열 추출
+- `validate_finding()` — 필수 필드 정규화, stage3 태그 부여, rule_id = category
+- `load_exclude_findings()` / `filter_excluded()` — Stage 1/2 결과와 중복 제거
+- `call_anthropic_api()` — urllib 기반 API 호출, rate limit 429/5xx 재시도 (exponential backoff, 최대 3회)
+- `review_file()` — 파일 단위 리뷰, 예산 초과 시 skip, 청킹 지원
+- `review_pr()` — PR 전체 리뷰 (파일별 순회, 비C++ 스킵, generated 스킵)
+- `--dry-run` 모드 — API 호출 없이 시스템 프롬프트 확인
+
+**시스템 프롬프트 구성:**
+- Stage 1 이관 항목: auto 금지, 요다 컨디션, ! 연산자, sandwich inequality, FSimpleDelegateGraphTask, LOCTEXT_NAMESPACE, ConstructorHelpers
+- clang-tidy 대체 (compile_commands 없을 때): override, virtual destructor, 복사, else-after-return
+- LLM 검토 항목: GC 안전성, GameThread 안전성, 네트워크 효율, 성능, UE5 패턴, 설계, 주석, 보안
+
+**CLI 인터페이스:**
+```bash
+python -m scripts.stage3_llm_reviewer \
+  --diff pr.diff \
+  --exclude-findings findings-stage1.json findings-stage2.json \
+  --has-compile-commands false \
+  --output findings-stage3.json
+
+# Dry-run (시스템 프롬프트 확인):
+python -m scripts.stage3_llm_reviewer \
+  --diff pr.diff --dry-run
+```
+
+**에러 핸들링:**
+- API 타임아웃/에러: 해당 파일 skip, 파이프라인 계속
+- JSON 파싱 실패: skip, 로그 기록
+- Rate limit (429): exponential backoff 최대 3회
+- PR당 $2 초과: 남은 파일 skip, 경고
+
+**테스트 결과:** 81 passed (전체 448 passed, Step 2+3+4+5 포함)
+
+---
+
+## 🔜 다음 작업: Step 7
+
+### Step 7: GitHub Actions 워크플로우 + 문서화
+**상세 스펙:** `docs/steps/STEP7_WORKFLOWS.md`
 
 ---
 
@@ -326,24 +391,27 @@ ue5-review-bot/
 │   ├── .editorconfig
 │   ├── checklist.yml            # (Step 3에서 regex 버그 수정)
 │   └── gate_config.yml
-├── scripts/                     # ✅ Step 2 + Step 3 + Step 4 + Step 5 완료
+├── scripts/                     # ✅ Step 2 + Step 3 + Step 4 + Step 5 + Step 6 완료
 │   ├── __init__.py
 │   ├── gate_checker.py          # Gate 로직 (대규모 PR 판정)
 │   ├── stage1_pattern_checker.py # ✅ Stage 1 regex 패턴 검사
 │   ├── stage1_format_diff.py    # ✅ clang-format suggestion 생성
 │   ├── stage2_tidy_to_suggestions.py # ✅ Stage 2 clang-tidy 변환
+│   ├── stage3_llm_reviewer.py   # ✅ Stage 3 LLM 시맨틱 리뷰
 │   ├── post_review.py           # ✅ PR Review 게시 (findings 통합)
 │   └── utils/
 │       ├── __init__.py
 │       ├── diff_parser.py       # ✅ unified diff 파싱 유틸
-│       └── gh_api.py            # GitHub API 유틸리티
-├── tests/                       # ✅ Step 2 + Step 3 + Step 4 + Step 5 완료
+│       ├── gh_api.py            # GitHub API 유틸리티
+│       └── token_budget.py      # ✅ 토큰 예산 관리
+├── tests/                       # ✅ Step 2 + Step 3 + Step 4 + Step 5 + Step 6 완료
 │   ├── __init__.py
 │   ├── test_gate_checker.py     # Gate Checker 테스트 (50개)
 │   ├── test_pattern_checker.py  # ✅ 패턴 검사 테스트 (71개)
 │   ├── test_format_diff.py      # ✅ 포맷 suggestion 테스트 (21개)
 │   ├── test_stage2.py           # ✅ Stage 2 변환 테스트 (43개)
 │   ├── test_post_review.py      # ✅ PR Review 게시 테스트 (93개)
+│   ├── test_llm_reviewer.py     # ✅ Stage 3 LLM 리뷰 테스트 (81개)
 │   └── fixtures/
 │       ├── sample_bad.cpp       # 규칙 위반 샘플
 │       ├── sample_good.cpp      # 규칙 준수 샘플 (Step 3에서 수정)
@@ -356,7 +424,7 @@ ue5-review-bot/
         ├── STEP3_STAGE1.md      # ✅ 완료
         ├── STEP4_POST_REVIEW.md # ✅ 완료
         ├── STEP5_STAGE2.md      # ✅ 완료
-        ├── STEP6_STAGE3.md      # 🔜 다음
+        ├── STEP6_STAGE3.md      # ✅ 완료
         └── STEP7_WORKFLOWS.md
 ```
 
@@ -413,7 +481,7 @@ Stage 3 (LLM 리뷰)     → Stage 1 이관 항목 포함, 의미론적 리뷰 �
 
 2. **다음 Step 스펙 읽기:**
    ```bash
-   cat docs/steps/STEP6_STAGE3.md        # LLM 리뷰
+   cat docs/steps/STEP7_WORKFLOWS.md     # GitHub Actions 워크플로우
    ```
 
 3. **새 브랜치 생성:**
