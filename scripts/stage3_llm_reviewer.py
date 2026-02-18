@@ -517,8 +517,21 @@ def review_file(
         chunks = chunk_diff(diff_text, BUDGET_PER_FILE - system_tokens)
         all_findings: List[Dict[str, Any]] = []
         for i, chunk in enumerate(chunks):
-            chunk_msg = build_user_message(file_path, chunk, full_source if i == 0 else None)
+            # Include full source only in first chunk, and only if it fits
+            chunk_source = full_source if i == 0 else None
+            if chunk_source is not None:
+                tentative_msg = build_user_message(file_path, chunk, chunk_source)
+                if system_tokens + estimate_tokens(tentative_msg) > BUDGET_PER_FILE:
+                    # Full source too large — drop it to stay within per-file limit
+                    chunk_source = None
+            chunk_msg = build_user_message(file_path, chunk, chunk_source)
             chunk_tokens = system_tokens + estimate_tokens(chunk_msg)
+            if chunk_tokens > BUDGET_PER_FILE:
+                logger.warning(
+                    "Chunk %d for %s exceeds per-file budget (%d > %d), skipping",
+                    i, file_path, chunk_tokens, BUDGET_PER_FILE,
+                )
+                continue
             if not budget.can_review_file(chunk_tokens):
                 logger.warning(
                     "Budget exhausted, skipping remaining chunks for %s", file_path
@@ -535,7 +548,7 @@ def review_file(
                 )
                 budget.record_usage(actual_input, actual_output)
                 findings = parse_llm_response(resp_text)
-                findings = [validate_finding(f, file_path) for f in findings]
+                findings = [validate_finding(f, file_path) for f in findings if isinstance(f, dict)]
                 findings = filter_excluded(findings, excluded)
                 all_findings.extend(findings)
             except RuntimeError as e:
@@ -561,7 +574,7 @@ def review_file(
         return []
 
     findings = parse_llm_response(resp_text)
-    findings = [validate_finding(f, file_path) for f in findings]
+    findings = [validate_finding(f, file_path) for f in findings if isinstance(f, dict)]
     findings = filter_excluded(findings, excluded)
 
     return findings

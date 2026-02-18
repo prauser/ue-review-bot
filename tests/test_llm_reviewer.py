@@ -985,3 +985,92 @@ class TestGeneratedFileSkipping:
         """)
         findings, summary = review_pr(diff)
         mock_api.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Tests: non-dict element filtering (review comment fix #1)
+# ---------------------------------------------------------------------------
+
+
+class TestNonDictElementFiltering:
+    """LLM may return non-dict items in the array; they must not crash."""
+
+    @patch("scripts.stage3_llm_reviewer.call_anthropic_api")
+    def test_mixed_array_skips_non_dict(self, mock_api):
+        """Non-dict elements like strings in the array should be silently skipped."""
+        response = json.dumps([
+            "this is a stray string",
+            {"file": "Source/A.cpp", "line": 10, "severity": "warning",
+             "category": "conv", "message": "valid finding"},
+            42,
+            None,
+        ])
+        mock_api.return_value = (response, 500, 200)
+
+        budget = BudgetTracker()
+        findings = review_file(
+            "Source/A.cpp",
+            SAMPLE_DIFF,
+            build_system_prompt(True),
+            set(),
+            budget,
+        )
+
+        # Only the dict element should survive
+        assert len(findings) == 1
+        assert findings[0]["file"] == "Source/A.cpp"
+        assert findings[0]["line"] == 10
+
+    @patch("scripts.stage3_llm_reviewer.call_anthropic_api")
+    def test_all_non_dict_returns_empty(self, mock_api):
+        """Array of only non-dict elements should return empty list."""
+        response = json.dumps(["text", 123, True, None])
+        mock_api.return_value = (response, 500, 200)
+
+        budget = BudgetTracker()
+        findings = review_file(
+            "Source/A.cpp",
+            SAMPLE_DIFF,
+            build_system_prompt(True),
+            set(),
+            budget,
+        )
+
+        assert findings == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: per-file budget enforcement in chunking (review comment fix #2)
+# ---------------------------------------------------------------------------
+
+
+class TestChunkingPerFileBudget:
+    """Chunks with large full_source must respect BUDGET_PER_FILE."""
+
+    @patch("scripts.stage3_llm_reviewer.call_anthropic_api")
+    def test_large_full_source_dropped_when_exceeds_per_file(self, mock_api):
+        """When full_source makes chunk exceed BUDGET_PER_FILE, source is dropped."""
+        mock_api.return_value = ("[]", 500, 50)
+
+        # Create a very large full_source that would blow the per-file budget
+        huge_source = "int x;\n" * 30000  # ~210K chars → ~70K tokens
+
+        # Use a moderately-sized diff that triggers chunking
+        # (total_input with huge_source > BUDGET_PER_FILE)
+        budget = BudgetTracker(max_tokens=500_000, max_cost=10.0)
+        findings = review_file(
+            "Source/Big.cpp",
+            SAMPLE_DIFF,
+            build_system_prompt(True),
+            set(),
+            budget,
+            full_source=huge_source,
+        )
+
+        # Should have called API (with source dropped or diff chunked)
+        assert mock_api.called
+        # The user message should NOT contain the huge source
+        # (it was dropped because it exceeded per-file budget)
+        call_args = mock_api.call_args
+        user_msg = call_args[0][1]
+        assert "int x;" not in user_msg or len(user_msg) < len(huge_source)
