@@ -968,6 +968,34 @@ class TestReconstructFileDiff:
         assert "@@ -5," in result
         assert "@@ -50," in result
 
+    def test_old_new_lengths_differ(self):
+        """Hunks with different add/delete counts should have accurate old/new lengths."""
+        from scripts.utils.diff_parser import FileDiff
+
+        # 1 context, 2 deleted, 3 added → old_len=3, new_len=4
+        fd = FileDiff(
+            path="Source/A.cpp",
+            hunks=[{"start": 10, "end": 14,
+                    "content": " ctx\n-old1\n-old2\n+new1\n+new2\n+new3"}],
+        )
+        result = _reconstruct_file_diff(fd)
+        # old side: 1 context + 2 deleted = 3
+        assert "@@ -10,3" in result
+        # new side: 1 context + 3 added = 4
+        assert "+10,4" in result
+
+    def test_delete_only_hunk(self):
+        """A deletion-only hunk should have new_len=0 for context lines only."""
+        from scripts.utils.diff_parser import FileDiff
+
+        fd = FileDiff(
+            path="Source/A.cpp",
+            hunks=[{"start": 20, "end": 20, "content": "-removed"}],
+        )
+        result = _reconstruct_file_diff(fd)
+        assert "@@ -20,1" in result
+        assert "+20,0" in result
+
 
 # ---------------------------------------------------------------------------
 # Tests: generated file skipping
@@ -1129,6 +1157,20 @@ class TestJsonExtractionHardening:
     def test_only_non_json_brackets(self):
         findings = parse_llm_response("[주의] 이것은 JSON이 아닙니다 [참고]")
         assert findings == []
+
+    def test_trailing_bracket_text_after_json(self):
+        """Non-JSON brackets after a valid array must not break extraction."""
+        response = '[{"file": "d.cpp", "line": 7}] 추가로 [참고] 텍스트입니다.'
+        findings = parse_llm_response(response)
+        assert len(findings) == 1
+        assert findings[0]["file"] == "d.cpp"
+
+    def test_json_array_between_bracket_text(self):
+        """Valid JSON sandwiched between non-JSON brackets."""
+        response = '[주의] 아래 결과:\n[{"file": "e.cpp", "line": 3}]\n[끝] 감사합니다.'
+        findings = parse_llm_response(response)
+        assert len(findings) == 1
+        assert findings[0]["file"] == "e.cpp"
 
 
 # ---------------------------------------------------------------------------

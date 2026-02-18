@@ -288,26 +288,19 @@ def parse_llm_response(response_text: str) -> List[Dict[str, Any]]:
 
     # Strategy 2: Try every '[' position to find a valid JSON array.
     # This avoids false matches like "[주의]" before the real array.
+    # Use raw_decode to consume exactly one JSON value, ignoring trailing text.
+    decoder = json.JSONDecoder()
     pos = 0
     while True:
         start = text.find("[", pos)
         if start == -1:
             break
         try:
-            data = json.loads(text[start:])
+            data, end_idx = decoder.raw_decode(text, start)
             if isinstance(data, list):
                 return data
-        except json.JSONDecodeError:
+        except (json.JSONDecodeError, ValueError):
             pass
-        # Also try with trailing text trimmed at the matching ']'
-        end = text.rfind("]", start)
-        if end > start:
-            try:
-                data = json.loads(text[start : end + 1])
-                if isinstance(data, list):
-                    return data
-            except json.JSONDecodeError:
-                pass
         pos = start + 1
 
     logger.warning("No JSON array found in LLM response")
@@ -714,11 +707,23 @@ def _reconstruct_file_diff(file_diff) -> str:
         content = hunk.get("content", "")
         if not content:
             continue
-        start = hunk.get("start", 0)
-        end = hunk.get("end", start)
-        length = end - start + 1 if end >= start else 1
-        # Reconstruct @@ header so the LLM knows the line range.
-        lines.append(f"@@ -{start},{length} +{start},{length} @@")
+        new_start = hunk.get("start", 0)
+        # Compute accurate old/new lengths from actual hunk content lines.
+        old_len = 0
+        new_len = 0
+        for hl in content.split("\n"):
+            if hl.startswith("+"):
+                new_len += 1
+            elif hl.startswith("-"):
+                old_len += 1
+            elif hl.startswith(" ") or hl == "":
+                # Context line — counts in both old and new.
+                old_len += 1
+                new_len += 1
+            # Lines starting with '\' (e.g. "\ No newline") don't count.
+        # old_start is not stored by parse_diff; approximate with new_start.
+        old_start = new_start
+        lines.append(f"@@ -{old_start},{old_len} +{new_start},{new_len} @@")
         lines.append(content)
     return "\n".join(lines)
 
