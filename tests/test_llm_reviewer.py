@@ -1458,3 +1458,47 @@ class TestParseLlmResponseNonFindingsArray:
         from scripts.stage3_llm_reviewer import parse_llm_response
         result = parse_llm_response("[1, 2, 3]")
         assert result == []
+
+    def test_code_fence_scalar_array_skipped(self):
+        """Code fence with scalar array should fall through to Strategy 2."""
+        from scripts.stage3_llm_reviewer import parse_llm_response
+        text = (
+            '```json\n[1, 2, 3]\n```\n'
+            '[{"file":"a.cpp","line":1,"message":"real finding"}]'
+        )
+        result = parse_llm_response(text)
+        assert len(result) == 1
+        assert result[0]["file"] == "a.cpp"
+
+    def test_code_fence_empty_array_accepted(self):
+        """Code fence with [] (no findings) is still valid."""
+        from scripts.stage3_llm_reviewer import parse_llm_response
+        result = parse_llm_response("```json\n[]\n```")
+        assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: API response JSON parse failure wrapped as RuntimeError
+# ---------------------------------------------------------------------------
+
+class TestApiResponseJsonParseError:
+    """Non-JSON API responses should raise RuntimeError, not JSONDecodeError."""
+
+    def test_non_json_response_raises_runtime_error(self):
+        from scripts.stage3_llm_reviewer import call_anthropic_api
+        from unittest.mock import patch, MagicMock
+        import io
+
+        # Simulate a 200 response with non-JSON body (e.g. proxy HTML page)
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = b"<html>Gateway Timeout</html>"
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+
+        with patch("urllib.request.urlopen", return_value=mock_resp):
+            import pytest
+            with pytest.raises(RuntimeError, match="non-JSON response"):
+                call_anthropic_api(
+                    "system", "user",
+                    api_key="test-key",
+                )

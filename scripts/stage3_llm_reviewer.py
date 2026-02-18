@@ -285,7 +285,7 @@ def parse_llm_response(response_text: str) -> List[Dict[str, Any]]:
     fence_content = _extract_fenced_content(text)
     if fence_content is not None:
         result = _try_parse_json_array(fence_content)
-        if result is not None:
+        if result is not None and _is_findings_array(result):
             return result
 
     # Strategy 2: Try every '[' position to find a valid JSON array.
@@ -477,7 +477,13 @@ def call_anthropic_api(
         try:
             req = urllib.request.Request(url, data=data, headers=headers, method="POST")
             with urllib.request.urlopen(req, timeout=120) as resp:
-                body = json.loads(resp.read().decode("utf-8"))
+                raw_body = resp.read().decode("utf-8")
+                try:
+                    body = json.loads(raw_body)
+                except json.JSONDecodeError as e:
+                    raise RuntimeError(
+                        f"API returned non-JSON response: {raw_body[:200]}"
+                    ) from e
 
             # Extract text from response
             text = ""
