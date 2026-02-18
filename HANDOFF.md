@@ -14,7 +14,7 @@
 - ✅ **Step 2 완료** (테스트 픽스처 + Gate Checker)
 - ✅ **Step 3 완료** (Stage 1 — regex 패턴 매칭 + clang-format suggestion)
 - ✅ **Step 4 완료** (PR 코멘트 게시 — post_review + gh_api 확장)
-- 🔜 **Step 5 진행 예정** (Stage 2 — clang-tidy 정적 분석)
+- ✅ **Step 5 완료** (Stage 2 — clang-tidy 정적 분석)
 
 **전체 계획:** `PLAN.md` 참조
 
@@ -182,89 +182,61 @@ python -m scripts.stage1_format_diff \
 
 ---
 
-## ✅ 완료된 작업: Step 4
-
-### Step 4: PR 코멘트 게시
-
-**브랜치:** `claude/step4-post-review-H20Qe`
-**상태:** 커밋/푸시 완료
-
-#### 생성/수정된 파일 (3개)
-
-| 파일 | 설명 |
-|------|------|
-| `scripts/post_review.py` | Stage 1/2/3 findings 통합 → PR Review 게시 |
-| `scripts/utils/gh_api.py` | GitHubClient 클래스 추가 (GHES/github.com REST API) |
-| `tests/test_post_review.py` | post_review + gh_api 유닛/통합 테스트 (58개) |
-
-#### 주요 구현 사항
-
-**`scripts/utils/gh_api.py` 확장:**
-- 기존 `get_pr_labels()` 유지 (하위 호환)
-- `GitHubClient` 클래스 추가: urllib 기반 REST API 클라이언트
-  - GHES (`https://github.company.com/api/v3`) 및 github.com 지원
-  - 인증: `token {GHES_TOKEN}` 헤더
-  - Retry: 403/429/5xx에 exponential backoff (최대 3회)
-  - `create_review()`: PR Review 생성 (인라인 코멘트 + suggestion 블록)
-  - `get_existing_review_comments()`: 중복 방지용 기존 코멘트 조회
-  - `get_pull_request()`: PR 메타데이터 (HEAD SHA 등) 조회
-
-**`scripts/post_review.py`:**
-- 다중 JSON 파일에서 findings 로드 (`load_findings`)
-  - 누락 파일 graceful skip (Stage가 실행되지 않은 경우 대비)
-  - JSON 파싱 오류 시 경고 후 skip
-- 파일+라인 기준 중복 제거 (`deduplicate_findings`)
-  - severity 우선순위: error > warning > suggestion > info
-  - 동일 severity 시 먼저 등장한 finding 유지
-- GitHub suggestion 블록 포맷팅 (`format_comment_body`)
-  - `suggestion` 필드가 있으면 ` ```suggestion ``` ` 마크다운 블록 생성
-  - severity 라벨 + rule_id + 메시지 구성
-- 멀티라인 코멘트 지원 (`build_review_comments`)
-  - `end_line > line`일 때 `start_line`/`line` 범위 설정
-  - `side: RIGHT` (새 파일 기준)
-- 리뷰 요약 생성 (`build_summary`)
-  - severity별 카운트 + rule별 카운트 (상위 10개)
-  - 실행된 Stage 정보 표시
-- 배치 분할 (`split_into_batches`)
-  - GitHub API 제한 (50개/리뷰) 초과 시 자동 분할
-  - 첫 배치에 요약, 이후 배치에 continuation 표시
-- API 에러 시 해당 배치만 skip, 나머지 계속 진행
-
-**CLI 인터페이스:**
-```bash
-# 실제 게시
-python -m scripts.post_review \
-  --findings findings-stage1.json suggestions-format.json \
-  --pr-number 42 \
-  --repo owner/repo \
-  --commit-sha abc123 \
-  --token $GHES_TOKEN \
-  --api-url https://github.company.com/api/v3 \
-  --stages stage1,stage2 \
-  --output review-result.json
-
-# 드라이런 (API 호출 없이 페이로드 확인)
-python -m scripts.post_review \
-  --findings findings-stage1.json \
-  --dry-run \
-  --output review-payload.json
-```
-
-**환경 변수 지원:**
-- `GHES_TOKEN` 또는 `GITHUB_TOKEN`: 인증 토큰
-- `GHES_URL`: GHES 서버 주소 (자동으로 `/api/v3` 추가)
-- `--commit-sha` 미제공 시 PR API에서 HEAD SHA 자동 조회
-
-**테스트 결과:** 58 passed (전체 239 passed, Step 1~4 포함)
-
----
-
-## 🔜 다음 작업: Step 5
+## ✅ 완료된 작업: Step 5
 
 ### Step 5: Stage 2 — clang-tidy 정적 분석
 
 **상세 스펙:** `docs/steps/STEP5_STAGE2.md`
-**브랜치 명명:** `claude/review-plan-step5-<SESSION_ID>` (새 세션에서 생성)
+**브랜치:** `claude/verify-handoff-testing-a5JqI`
+**상태:** 커밋/푸시 완료
+
+#### 생성된 파일 (3개)
+
+| 파일 | 설명 |
+|------|------|
+| `configs/.clang-tidy` | clang-tidy 체크 설정 (9개 체크, Source 헤더 필터) |
+| `scripts/stage2_tidy_to_suggestions.py` | clang-tidy `--export-fixes` YAML → suggestion/comment 변환 |
+| `tests/test_stage2.py` | 변환 로직 테스트 (43개) |
+
+#### 주요 구현 사항
+
+**`configs/.clang-tidy` 설정 (9개 체크):**
+- `modernize-use-override` — override 키워드 누락
+- `cppcoreguidelines-virtual-class-destructor` — virtual 소멸자 누락
+- `bugprone-virtual-near-miss` — 가상 함수 오버라이드 오타
+- `performance-unnecessary-copy-initialization` — 불필요 복사 초기화
+- `performance-for-range-copy` — range-for 루프 복사
+- `clang-analyzer-optin.cplusplus.VirtualCall` — 생성자/소멸자 내 가상 호출
+- `clang-analyzer-core.DivideZero` — 0 나누기
+- `readability-else-after-return` — return 후 불필요 else
+- `readability-redundant-smartptr-get` — 불필요 스마트 포인터 `.get()`
+- `HeaderFilterRegex: 'Source/.*'` (Engine 헤더 제외)
+
+**`scripts/stage2_tidy_to_suggestions.py`:**
+- clang-tidy `--export-fixes` YAML 파싱 (`parse_tidy_fixes`)
+- fix 있는 항목 → suggestion 블록 (소스 내용 기반 replacement 적용)
+- fix 없는 항목 → 일반 코멘트
+- Stage 1 결과와 **중복 제거** (같은 file + line → skip)
+- check name → checklist rule_id 매핑 (예: `modernize-use-override` → `override_keyword`)
+- `--pvs-report` 인터페이스 준비 (placeholder, 인자 없으면 clang-tidy만 처리)
+- byte offset → line number 변환 (소스 있으면 정확히, 없으면 추정)
+
+**CLI 인터페이스:**
+```bash
+python -m scripts.stage2_tidy_to_suggestions \
+  --tidy-fixes fixes.yaml \
+  --stage1-results findings-stage1.json \
+  --output findings-stage2.json
+```
+
+**테스트 결과:** 43 passed (전체 224 passed, Step 2+3 포함)
+
+---
+
+## 🔜 다음 작업: Step 6
+
+### Step 6: Stage 3 — LLM 리뷰
+**상세 스펙:** `docs/steps/STEP6_STAGE3.md`
 
 ---
 
@@ -274,26 +246,29 @@ python -m scripts.post_review \
 ue5-review-bot/
 ├── PLAN.md                      # 전체 계획서
 ├── HANDOFF.md                   # 이 파일
-├── configs/                     # ✅ Step 1 완료
+├── configs/                     # ✅ Step 1 + Step 5 완료
 │   ├── .clang-format
+│   ├── .clang-tidy              # ✅ Step 5 clang-tidy 설정
 │   ├── .editorconfig
 │   ├── checklist.yml            # (Step 3에서 regex 버그 수정)
 │   └── gate_config.yml
-├── scripts/                     # ✅ Step 2 + Step 3 + Step 4 완료
+├── scripts/                     # ✅ Step 2 + Step 3 + Step 4 + Step 5 완료
 │   ├── __init__.py
 │   ├── gate_checker.py          # Gate 로직 (대규모 PR 판정)
 │   ├── stage1_pattern_checker.py # ✅ Stage 1 regex 패턴 검사
 │   ├── stage1_format_diff.py    # ✅ clang-format suggestion 생성
+│   ├── stage2_tidy_to_suggestions.py # ✅ Stage 2 clang-tidy 변환
 │   ├── post_review.py           # ✅ PR Review 게시 (findings 통합)
 │   └── utils/
 │       ├── __init__.py
 │       ├── diff_parser.py       # ✅ unified diff 파싱 유틸
-│       └── gh_api.py            # ✅ GitHub API (라벨 조회 + Review 게시)
-├── tests/                       # ✅ Step 2 + Step 3 + Step 4 완료
+│       └── gh_api.py            # GitHub API 유틸리티
+├── tests/                       # ✅ Step 2 + Step 3 + Step 4 + Step 5 완료
 │   ├── __init__.py
 │   ├── test_gate_checker.py     # Gate Checker 테스트 (50개)
 │   ├── test_pattern_checker.py  # ✅ 패턴 검사 테스트 (71개)
 │   ├── test_format_diff.py      # ✅ 포맷 suggestion 테스트 (21개)
+│   ├── test_stage2.py           # ✅ Stage 2 변환 테스트 (43개)
 │   ├── test_post_review.py      # ✅ PR Review 게시 테스트 (58개)
 │   └── fixtures/
 │       ├── sample_bad.cpp       # 규칙 위반 샘플
@@ -361,20 +336,20 @@ Stage 3 (LLM 리뷰)     → Stage 1 이관 항목 포함, 의미론적 리뷰 �
    git status
    ```
 
-2. **Step 5 스펙 읽기:**
+2. **다음 Step 스펙 읽기:**
    ```bash
-   cat docs/steps/STEP5_STAGE2.md
+   cat docs/steps/STEP4_POST_REVIEW.md   # PR 코멘트 게시
+   # 또는
+   cat docs/steps/STEP6_STAGE3.md        # LLM 리뷰
    ```
 
-3. **새 브랜치 생성 (또는 기존 브랜치 체크아웃):**
+3. **새 브랜치 생성:**
    ```bash
-   git checkout -b claude/review-plan-step5-<NEW_SESSION_ID>
+   git checkout -b claude/review-plan-step<N>-<NEW_SESSION_ID>
    ```
 
 4. **작업 시작:**
-   - `.clang-tidy` 설정 생성
-   - `scripts/stage2_clang_tidy.py` 구현
-   - `tests/test_stage2_clang_tidy.py` 작성
+   - 해당 Step 스펙에 따라 구현
    - pytest 실행 및 검증
    - 커밋/푸시
 
