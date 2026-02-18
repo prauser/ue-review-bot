@@ -601,6 +601,7 @@ def review_file(
         all_findings: List[Dict[str, Any]] = []
         file_input_used = 0  # cumulative input tokens for this file
         chunks_reviewed = 0
+        file_had_skip = False
         for i, chunk in enumerate(chunks):
             # Include full source only in first chunk, and only if it fits
             chunk_source = full_source if i == 0 else None
@@ -616,7 +617,7 @@ def review_file(
                     "Chunk %d for %s exceeds per-file budget (%d > %d), skipping",
                     i, file_path, chunk_tokens, BUDGET_PER_FILE,
                 )
-                budget.record_skip()
+                file_had_skip = True
                 continue
             # Enforce per-file cumulative limit
             if file_input_used + chunk_tokens > BUDGET_PER_FILE:
@@ -629,7 +630,7 @@ def review_file(
                 logger.warning(
                     "Budget exhausted, skipping remaining chunks for %s", file_path
                 )
-                budget.record_skip()
+                file_had_skip = True
                 break
             try:
                 resp_text, actual_input, actual_output = call_anthropic_api(
@@ -650,6 +651,8 @@ def review_file(
                 logger.error("API error reviewing %s chunk %d: %s", file_path, i, e)
         if chunks_reviewed > 0:
             budget.record_file_reviewed()
+        if file_had_skip and chunks_reviewed == 0:
+            budget.record_skip()
         return all_findings
 
     if not budget.can_review_file(total_input):
@@ -780,8 +783,7 @@ def _reconstruct_file_diff(file_diff) -> str:
                 old_len += 1
                 new_len += 1
             # Lines starting with '\' (e.g. "\ No newline") don't count.
-        # old_start is not stored by parse_diff; approximate with new_start.
-        old_start = new_start
+        old_start = hunk.get("old_start", new_start)
         lines.append(f"@@ -{old_start},{old_len} +{new_start},{new_len} @@")
         lines.append(content)
     return "\n".join(lines)

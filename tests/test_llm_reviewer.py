@@ -1752,3 +1752,125 @@ class TestCanReviewFileCostGate:
         cost_with_max = estimate_cost(input_tokens, _MAX_OUTPUT_PER_CALL)
         bt = BudgetTracker(max_tokens=1_000_000, max_cost=cost_with_max * 2)
         assert bt.can_review_file(input_tokens) is True
+
+
+# ---------------------------------------------------------------------------
+# Tests: file-level skip counting (review comment fix)
+# ---------------------------------------------------------------------------
+
+class TestFileSkipCounting:
+    """Chunk-level skips should be counted once per file, not per chunk."""
+
+    def test_oversize_chunks_count_as_one_skip(self):
+        """Multiple oversize chunks in one file → files_skipped_budget == 1."""
+        from scripts.stage3_llm_reviewer import review_file
+        from scripts.utils.token_budget import BudgetTracker, BUDGET_PER_FILE
+        from unittest.mock import patch
+
+        budget = BudgetTracker()
+        # Build a diff so large that all chunks exceed BUDGET_PER_FILE
+        # each line ~100 chars → ~33 tokens, 500 lines → ~16500 tokens per chunk
+        # with system overhead this should exceed BUDGET_PER_FILE
+        big_lines = "\n".join(f"+{'x' * 200}" for _ in range(500))
+        diff = f"@@ -1,3 +1,500 @@\n{big_lines}"
+
+        # Mock API to never be called (all chunks should be skipped or budget exceeded)
+        with patch("scripts.stage3_llm_reviewer.call_anthropic_api") as mock_api:
+            # Use a very small BUDGET_PER_FILE to force skipping
+            with patch("scripts.stage3_llm_reviewer.BUDGET_PER_FILE", 50):
+                review_file(
+                    "big.cpp", diff, "sys" * 100, set(), budget,
+                    model="test", api_key="k",
+                )
+        # Should count as at most 1 file skip, not one per chunk
+        assert budget.files_skipped_budget <= 1
+
+    def test_partial_review_no_skip_count(self):
+        """If some chunks were reviewed, file should not be counted as skipped."""
+        from scripts.stage3_llm_reviewer import review_file
+        from scripts.utils.token_budget import BudgetTracker
+        from unittest.mock import patch
+
+        budget = BudgetTracker(max_tokens=1_000_000, max_cost=100.0)
+        diff = "@@ -1,3 +1,200 @@\n" + "\n".join(f"+line {i}" for i in range(200))
+
+        api_resp = ('[]', 500, 100)
+        with patch("scripts.stage3_llm_reviewer.call_anthropic_api", return_value=api_resp):
+            review_file(
+                "f.cpp", diff, "system prompt", set(), budget,
+                model="test", api_key="k",
+            )
+        assert budget.files_skipped_budget == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: parse_diff stores old_start in hunk (review comment fix)
+# ---------------------------------------------------------------------------
+
+class TestParseDiffOldStart:
+    """parse_diff should store old_start in each hunk dict."""
+
+    def test_old_start_stored(self):
+        from scripts.utils.diff_parser import parse_diff
+        diff = (
+            "diff --git a/f.cpp b/f.cpp\n"
+            "--- a/f.cpp\n"
+            "+++ b/f.cpp\n"
+            "@@ -10,3 +20,4 @@\n"
+            " context\n"
+            "+added\n"
+        )
+        result = parse_diff(diff)
+        hunks = result["f.cpp"].hunks
+        assert len(hunks) == 1
+        assert hunks[0]["old_start"] == 10
+        assert hunks[0]["start"] == 20
+
+    def test_old_start_different_from_new(self):
+        from scripts.utils.diff_parser import parse_diff
+        diff = (
+            "diff --git a/f.cpp b/f.cpp\n"
+            "--- a/f.cpp\n"
+            "+++ b/f.cpp\n"
+            "@@ -5,3 +15,5 @@\n"
+            " ctx\n"
+            "+a\n"
+            "+b\n"
+        )
+        result = parse_diff(diff)
+        hunk = result["f.cpp"].hunks[0]
+        assert hunk["old_start"] == 5
+        assert hunk["start"] == 15
+
+
+class TestReconstructFileDiffOldStart:
+    """_reconstruct_file_diff should use old_start from hunk data."""
+
+    def test_uses_old_start(self):
+        from scripts.stage3_llm_reviewer import _reconstruct_file_diff
+        from scripts.utils.diff_parser import FileDiff
+
+        fd = FileDiff(path="f.cpp")
+        fd.hunks.append({
+            "start": 20,
+            "end": 25,
+            "old_start": 10,
+            "content": " ctx\n+added\n-removed",
+        })
+        result = _reconstruct_file_diff(fd)
+        assert "@@ -10," in result
+        assert "+20," in result
+
+    def test_fallback_when_old_start_missing(self):
+        from scripts.stage3_llm_reviewer import _reconstruct_file_diff
+        from scripts.utils.diff_parser import FileDiff
+
+        fd = FileDiff(path="f.cpp")
+        fd.hunks.append({
+            "start": 20,
+            "end": 25,
+            "content": " ctx\n+added",
+        })
+        result = _reconstruct_file_diff(fd)
+        # Falls back to new_start when old_start is absent
+        assert "@@ -20," in result

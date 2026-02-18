@@ -107,6 +107,7 @@ def parse_diff(diff_text: str) -> Dict[str, FileDiff]:
 
     # Hunk accumulation state
     hunk_start = 0
+    hunk_old_start = 0
     hunk_lines: List[str] = []
 
     def _flush_hunk() -> None:
@@ -126,6 +127,7 @@ def parse_diff(diff_text: str) -> Dict[str, FileDiff]:
                 {
                     "start": hunk_start,
                     "end": end_line,
+                    "old_start": hunk_old_start,
                     "content": "\n".join(hunk_lines),
                 }
             )
@@ -159,6 +161,7 @@ def parse_diff(diff_text: str) -> Dict[str, FileDiff]:
             _flush_hunk()
             in_header = False
             in_hunk = True
+            hunk_old_start = int(m.group(1))
             line_num = int(m.group(3))
             hunk_start = line_num
             hunk_lines = []
