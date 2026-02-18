@@ -222,6 +222,8 @@ def load_exclude_findings(file_paths: List[str]) -> Set[Tuple[str, int]]:
             if not isinstance(data, list):
                 continue
             for finding in data:
+                if not isinstance(finding, dict):
+                    continue
                 file = finding.get("file", "")
                 try:
                     line = int(finding.get("line", 0))
@@ -289,6 +291,7 @@ def parse_llm_response(response_text: str) -> List[Dict[str, Any]]:
     # Strategy 2: Try every '[' position to find a valid JSON array.
     # This avoids false matches like "[주의]" before the real array.
     # Use raw_decode to consume exactly one JSON value, ignoring trailing text.
+    # Only accept arrays that contain at least one dict element (findings schema).
     decoder = json.JSONDecoder()
     pos = 0
     while True:
@@ -297,7 +300,7 @@ def parse_llm_response(response_text: str) -> List[Dict[str, Any]]:
             break
         try:
             data, end_idx = decoder.raw_decode(text, start)
-            if isinstance(data, list):
+            if isinstance(data, list) and _is_findings_array(data):
                 return data
         except (json.JSONDecodeError, ValueError):
             pass
@@ -324,6 +327,18 @@ def _extract_fenced_content(text: str) -> Optional[str]:
         if inside:
             content_lines.append(line)
     return "\n".join(content_lines).strip() if content_lines else None
+
+
+def _is_findings_array(data: list) -> bool:
+    """Check if a parsed JSON array looks like a findings array.
+
+    Accepts empty arrays (valid "no issues" response) and arrays where
+    at least one element is a dict (findings objects).  Rejects arrays
+    of scalars like ``[1]`` or ``["text"]`` that are not findings.
+    """
+    if len(data) == 0:
+        return True
+    return any(isinstance(item, dict) for item in data)
 
 
 def _try_parse_json_array(text: str) -> Optional[List[Dict[str, Any]]]:
@@ -353,8 +368,11 @@ def validate_finding(finding: Dict[str, Any], file_path: str) -> Dict[str, Any]:
     """
     normalized: Dict[str, Any] = {}
 
-    # File — use LLM-provided or fallback to expected file
-    normalized["file"] = finding.get("file") or file_path
+    # File — use LLM-provided or fallback to expected file.
+    # Force str() to prevent unhashable types (e.g. list) in downstream
+    # set lookups like filter_excluded().
+    raw_file = finding.get("file")
+    normalized["file"] = str(raw_file) if isinstance(raw_file, str) else file_path
 
     # Line numbers — coerce to int
     try:
@@ -369,24 +387,28 @@ def validate_finding(finding: Dict[str, Any], file_path: str) -> Dict[str, Any]:
         except (TypeError, ValueError):
             pass
 
-    # Severity — validate against known values
-    severity = finding.get("severity", "warning")
+    # Severity — validate against known values; force str for non-string input.
+    raw_severity = finding.get("severity", "warning")
+    severity = raw_severity if isinstance(raw_severity, str) else "warning"
     if severity not in ("error", "warning", "info", "suggestion"):
         severity = "warning"
     normalized["severity"] = severity
 
-    # Category / rule_id
-    category = finding.get("category", "general")
+    # Category / rule_id — force str to prevent unhashable types in
+    # post_review.deduplicate_findings() tuple keys.
+    raw_category = finding.get("category", "general")
+    category = str(raw_category) if isinstance(raw_category, str) else "general"
     normalized["category"] = category
     normalized["rule_id"] = category  # post_review uses rule_id or category
 
-    # Message
-    normalized["message"] = finding.get("message", "")
+    # Message — force str for safety.
+    raw_message = finding.get("message", "")
+    normalized["message"] = str(raw_message) if isinstance(raw_message, str) else ""
 
-    # Suggestion (optional)
+    # Suggestion (optional) — force str.
     suggestion = finding.get("suggestion")
     if suggestion:
-        normalized["suggestion"] = suggestion
+        normalized["suggestion"] = str(suggestion) if isinstance(suggestion, str) else str(suggestion)
 
     # Stage tag
     normalized["stage"] = "stage3"

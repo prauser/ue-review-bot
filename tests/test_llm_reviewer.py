@@ -1326,3 +1326,135 @@ class TestSubChunkHunkHeader:
 
         for i in range(100):
             assert f"+line_{i}" in all_body, f"Missing +line_{i} in sub-chunks"
+
+
+# ---------------------------------------------------------------------------
+# Tests: validate_finding field type normalization (review comment fix)
+# ---------------------------------------------------------------------------
+
+class TestValidateFindingFieldTypes:
+    """LLM-provided fields must be coerced to safe types."""
+
+    def test_file_as_list_uses_fallback(self):
+        """If LLM returns file as a list, fallback to file_path."""
+        from scripts.stage3_llm_reviewer import validate_finding
+        finding = {"file": ["a.cpp", "b.cpp"], "line": 10, "message": "issue"}
+        result = validate_finding(finding, "expected.cpp")
+        assert result["file"] == "expected.cpp"
+
+    def test_file_as_dict_uses_fallback(self):
+        from scripts.stage3_llm_reviewer import validate_finding
+        finding = {"file": {"name": "a.cpp"}, "line": 5}
+        result = validate_finding(finding, "fallback.h")
+        assert result["file"] == "fallback.h"
+
+    def test_category_as_dict_uses_default(self):
+        from scripts.stage3_llm_reviewer import validate_finding
+        finding = {"file": "a.cpp", "line": 1, "category": {"type": "gc"}}
+        result = validate_finding(finding, "a.cpp")
+        assert result["category"] == "general"
+        assert isinstance(result["rule_id"], str)
+
+    def test_severity_as_int_uses_default(self):
+        from scripts.stage3_llm_reviewer import validate_finding
+        finding = {"file": "a.cpp", "line": 1, "severity": 42}
+        result = validate_finding(finding, "a.cpp")
+        assert result["severity"] == "warning"
+
+    def test_message_as_list_uses_empty(self):
+        from scripts.stage3_llm_reviewer import validate_finding
+        finding = {"file": "a.cpp", "line": 1, "message": ["msg1", "msg2"]}
+        result = validate_finding(finding, "a.cpp")
+        assert result["message"] == ""
+
+    def test_valid_fields_preserved(self):
+        """Normal string fields should pass through unchanged."""
+        from scripts.stage3_llm_reviewer import validate_finding
+        finding = {
+            "file": "Source/Actor.cpp",
+            "line": 42,
+            "severity": "error",
+            "category": "gc_safety",
+            "message": "UPROPERTY 누락",
+            "suggestion": "UPROPERTY() 추가",
+        }
+        result = validate_finding(finding, "Source/Actor.cpp")
+        assert result["file"] == "Source/Actor.cpp"
+        assert result["category"] == "gc_safety"
+        assert result["severity"] == "error"
+        assert result["message"] == "UPROPERTY 누락"
+        assert result["suggestion"] == "UPROPERTY() 추가"
+
+    def test_file_as_list_hashable_in_set(self):
+        """After normalization, (file, line) must be hashable for set lookup."""
+        from scripts.stage3_llm_reviewer import validate_finding, filter_excluded
+        finding = {"file": ["a.cpp"], "line": 10, "message": "x"}
+        result = validate_finding(finding, "b.cpp")
+        # Must not raise unhashable type error
+        excluded = {("b.cpp", 10)}
+        filtered = filter_excluded([result], excluded)
+        assert len(filtered) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: load_exclude_findings non-dict element safety (review comment fix)
+# ---------------------------------------------------------------------------
+
+class TestLoadExcludeFindingsNonDict:
+    """Non-dict elements in exclude findings JSON should be skipped."""
+
+    def test_non_dict_elements_skipped(self, tmp_path):
+        from scripts.stage3_llm_reviewer import load_exclude_findings
+        data = [
+            {"file": "a.cpp", "line": 10},
+            "string_element",
+            42,
+            None,
+            {"file": "b.cpp", "line": 20},
+        ]
+        f = tmp_path / "exclude.json"
+        f.write_text(json.dumps(data))
+        result = load_exclude_findings([str(f)])
+        assert ("a.cpp", 10) in result
+        assert ("b.cpp", 20) in result
+        assert len(result) == 2  # non-dict elements skipped
+
+    def test_all_non_dict_elements(self, tmp_path):
+        from scripts.stage3_llm_reviewer import load_exclude_findings
+        f = tmp_path / "bad.json"
+        f.write_text(json.dumps(["a", 1, [2, 3]]))
+        result = load_exclude_findings([str(f)])
+        assert len(result) == 0
+
+
+# ---------------------------------------------------------------------------
+# Tests: parse_llm_response skips non-findings arrays (review comment fix)
+# ---------------------------------------------------------------------------
+
+class TestParseLlmResponseNonFindingsArray:
+    """parse_llm_response should skip arrays of scalars like [1]."""
+
+    def test_scalar_array_before_findings(self):
+        from scripts.stage3_llm_reviewer import parse_llm_response
+        text = '참고 [1] 내용입니다. [{"file":"a.cpp","line":5,"message":"issue"}]'
+        result = parse_llm_response(text)
+        assert len(result) == 1
+        assert result[0]["file"] == "a.cpp"
+
+    def test_string_array_skipped(self):
+        from scripts.stage3_llm_reviewer import parse_llm_response
+        text = '["warning", "info"] [{"file":"b.h","line":10,"message":"fix"}]'
+        result = parse_llm_response(text)
+        assert len(result) == 1
+        assert result[0]["file"] == "b.h"
+
+    def test_empty_array_accepted(self):
+        """Empty array [] is valid — means no findings."""
+        from scripts.stage3_llm_reviewer import parse_llm_response
+        result = parse_llm_response("[]")
+        assert result == []
+
+    def test_only_scalar_arrays_returns_empty(self):
+        from scripts.stage3_llm_reviewer import parse_llm_response
+        result = parse_llm_response("[1, 2, 3]")
+        assert result == []
