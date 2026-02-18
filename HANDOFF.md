@@ -1,7 +1,7 @@
 # HANDOFF — UE5 코드리뷰 자동화 시스템 구현 진행상황
 
 > 세션 간 작업 인계를 위한 문서
-> 최종 업데이트: 2026-02-17
+> 최종 업데이트: 2026-02-18
 
 ---
 
@@ -182,6 +182,80 @@ python -m scripts.stage1_format_diff \
 
 ---
 
+## ✅ 완료된 작업: Step 4
+
+### Step 4: PR 코멘트 게시 — post_review + gh_api 확장
+
+**상세 스펙:** `docs/steps/STEP4_POST_REVIEW.md`
+**브랜치:** `claude/step4-post-review-H20Qe`
+**상태:** 커밋/푸시 완료
+
+#### 생성/수정된 파일 (3개)
+
+| 파일 | 설명 |
+|------|------|
+| `scripts/post_review.py` | Stage 1~3 결과 통합 + 단일 PR Review 게시 |
+| `scripts/utils/gh_api.py` | 확장 — `GitHubClient`, `create_review()`, `get_existing_review_comments()` 추가 |
+| `tests/test_post_review.py` | 통합/게시 로직 테스트 (93개) |
+
+#### 주요 구현 사항
+
+**`scripts/post_review.py`:**
+- Stage 1 (패턴 + 포맷), Stage 2 (clang-tidy), Stage 3 (LLM) JSON 결과 통합
+- 파일 + 라인 기준 정렬, PR diff hunk 범위 검증 (범위 밖 코멘트 skip)
+- 중복 제거: 동일 file + line + rule_id → severity 우선순위 (error > warning > suggestion > info)
+- suggestion 블록 생성 (auto-fix 항목)
+- severity 아이콘: 🚫 error, ⚠️ warning, ℹ️ info
+- GHES 3.4+ multi-line 지원, 3.3 이하 fallback (코드 블록)
+- 최대 50개 코멘트 per review (GitHub API 제한), severity 기반 pruning
+- summary 테이블 (stage별/severity별 카운트)
+- dry-run 모드 지원 (API 호출 없이 payload 출력)
+- 기존 PR 코멘트 중복 방지 (paginated fetch)
+- 전체 실패 시 non-zero exit
+
+**`scripts/utils/gh_api.py` 확장:**
+- `GitHubClient` 클래스 — API 요청 핸들링 (token, base URL)
+- `create_review()` — PR Review 게시 (comments + body)
+- `get_pull_request()` — PR 메타데이터 조회
+- `get_existing_review_comments()` — 중복 방지용 기존 코멘트 조회 (페이지네이션)
+- `get_ghes_version()` — GHES 버전 감지 (multi-line 지원 판별)
+
+**CLI 인터페이스:**
+```bash
+python -m scripts.post_review \
+  --pr-number 42 \
+  --repo owner/repo \
+  --commit-sha abc123 \
+  --findings findings-stage1.json suggestions-format.json \
+  --token $GHES_TOKEN \
+  --api-url https://github.company.com/api/v3 \
+  --output review-result.json
+
+# Dry-run mode:
+python -m scripts.post_review \
+  --findings findings-stage1.json \
+  --dry-run \
+  --output review-payload.json
+```
+
+**출력 JSON:**
+```json
+{
+  "review_id": 12345,
+  "review_url": "https://...",
+  "total_findings": 15,
+  "posted_comments": 12,
+  "skipped_out_of_range": 2,
+  "skipped_duplicate": 1,
+  "by_stage": {"stage1-pattern": 5, "stage1-format": 3, "stage2": 2, "stage3": 2},
+  "by_severity": {"error": 2, "warning": 6, "info": 1, "suggestion": 3}
+}
+```
+
+**테스트 결과:** 93 passed (전체 278 passed, Step 2+3+5 포함)
+
+---
+
 ## ✅ 완료된 작업: Step 5
 
 ### Step 5: Stage 2 — clang-tidy 정적 분석
@@ -229,7 +303,7 @@ python -m scripts.stage2_tidy_to_suggestions \
   --output findings-stage2.json
 ```
 
-**테스트 결과:** 43 passed (전체 224 passed, Step 2+3 포함)
+**테스트 결과:** 43 passed (전체 367 passed, Step 2+3+4 포함)
 
 ---
 
@@ -269,7 +343,7 @@ ue5-review-bot/
 │   ├── test_pattern_checker.py  # ✅ 패턴 검사 테스트 (71개)
 │   ├── test_format_diff.py      # ✅ 포맷 suggestion 테스트 (21개)
 │   ├── test_stage2.py           # ✅ Stage 2 변환 테스트 (43개)
-│   ├── test_post_review.py      # ✅ PR Review 게시 테스트 (58개)
+│   ├── test_post_review.py      # ✅ PR Review 게시 테스트 (93개)
 │   └── fixtures/
 │       ├── sample_bad.cpp       # 규칙 위반 샘플
 │       ├── sample_good.cpp      # 규칙 준수 샘플 (Step 3에서 수정)
@@ -280,8 +354,9 @@ ue5-review-bot/
         ├── STEP1_CONFIGS.md     # ✅ 완료
         ├── STEP2_GATE.md        # ✅ 완료
         ├── STEP3_STAGE1.md      # ✅ 완료
-        ├── STEP5_STAGE2.md      # 🔜 다음
-        ├── STEP6_STAGE3.md
+        ├── STEP4_POST_REVIEW.md # ✅ 완료
+        ├── STEP5_STAGE2.md      # ✅ 완료
+        ├── STEP6_STAGE3.md      # 🔜 다음
         └── STEP7_WORKFLOWS.md
 ```
 
@@ -338,8 +413,6 @@ Stage 3 (LLM 리뷰)     → Stage 1 이관 항목 포함, 의미론적 리뷰 �
 
 2. **다음 Step 스펙 읽기:**
    ```bash
-   cat docs/steps/STEP4_POST_REVIEW.md   # PR 코멘트 게시
-   # 또는
    cat docs/steps/STEP6_STAGE3.md        # LLM 리뷰
    ```
 
@@ -359,7 +432,7 @@ Stage 3 (LLM 리뷰)     → Stage 1 이관 항목 포함, 의미론적 리뷰 �
 
 - PDF 파일 (`CodeReviewCheckList.pdf`, `CodingConvention.pdf`)은 main 브랜치의 `docs/` 디렉토리에 보관
 - 현재 환경에서는 PDF 파싱 도구 설치 불가 → STEP1_CONFIGS.md 스펙 기반으로 작성 완료
-- `.clang-tidy` 설정은 Step 5에서 생성 (compile_commands.json과 함께)
+- `.clang-tidy` 설정은 Step 5에서 생성 완료 (9개 체크 설정)
 - `checklist.yml`의 tier 분류가 각 Stage 스크립트 구현의 기준이 됨
 - Stage 1 regex는 주석 라인을 자동 스킵하여 false positive 감소
 - `check_side_effect_suspicious`는 1차 필터 (Stage 3 LLM이 최종 검증)
