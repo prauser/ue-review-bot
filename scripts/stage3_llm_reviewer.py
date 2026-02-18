@@ -592,6 +592,8 @@ def review_file(
         chunk_budget = max(BUDGET_PER_FILE - system_tokens - wrapper_overhead, 1000)
         chunks = chunk_diff(diff_text, chunk_budget)
         all_findings: List[Dict[str, Any]] = []
+        file_input_used = 0  # cumulative input tokens for this file
+        chunks_reviewed = 0
         for i, chunk in enumerate(chunks):
             # Include full source only in first chunk, and only if it fits
             chunk_source = full_source if i == 0 else None
@@ -609,6 +611,13 @@ def review_file(
                 )
                 budget.record_skip()
                 continue
+            # Enforce per-file cumulative limit
+            if file_input_used + chunk_tokens > BUDGET_PER_FILE:
+                logger.warning(
+                    "File %s reached per-file budget (%d + %d > %d), stopping chunks",
+                    file_path, file_input_used, chunk_tokens, BUDGET_PER_FILE,
+                )
+                break
             if not budget.can_review_file(chunk_tokens):
                 logger.warning(
                     "Budget exhausted, skipping remaining chunks for %s", file_path
@@ -623,13 +632,17 @@ def review_file(
                     api_key=api_key,
                     api_url=api_url,
                 )
-                budget.record_usage(actual_input, actual_output)
+                budget.record_chunk_usage(actual_input, actual_output)
+                file_input_used += actual_input
+                chunks_reviewed += 1
                 findings = parse_llm_response(resp_text)
                 findings = [validate_finding(f, file_path) for f in findings if isinstance(f, dict)]
                 findings = filter_excluded(findings, excluded)
                 all_findings.extend(findings)
             except RuntimeError as e:
                 logger.error("API error reviewing %s chunk %d: %s", file_path, i, e)
+        if chunks_reviewed > 0:
+            budget.record_file_reviewed()
         return all_findings
 
     if not budget.can_review_file(total_input):

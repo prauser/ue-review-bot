@@ -1565,3 +1565,95 @@ class TestParseResponseEmptyArrayDeferred:
         result = parse_llm_response(text)
         assert len(result) == 1
         assert result[0]["file"] == "c.cpp"
+
+
+# ---------------------------------------------------------------------------
+# Tests: BudgetTracker record_chunk_usage / record_file_reviewed
+# ---------------------------------------------------------------------------
+
+class TestBudgetTrackerChunkMethods:
+    """record_chunk_usage should not increment files_reviewed."""
+
+    def test_record_chunk_usage_no_file_count(self):
+        from scripts.utils.token_budget import BudgetTracker
+        bt = BudgetTracker()
+        bt.record_chunk_usage(5000, 500)
+        bt.record_chunk_usage(5000, 500)
+        assert bt.total_input_tokens == 10000
+        assert bt.files_reviewed == 0  # not incremented
+
+    def test_record_file_reviewed(self):
+        from scripts.utils.token_budget import BudgetTracker
+        bt = BudgetTracker()
+        bt.record_chunk_usage(5000, 500)
+        bt.record_chunk_usage(5000, 500)
+        bt.record_file_reviewed()
+        assert bt.files_reviewed == 1
+
+    def test_record_usage_still_increments(self):
+        """Original record_usage should still increment files_reviewed."""
+        from scripts.utils.token_budget import BudgetTracker
+        bt = BudgetTracker()
+        bt.record_usage(5000, 500)
+        assert bt.files_reviewed == 1
+
+
+# ---------------------------------------------------------------------------
+# Tests: review_file chunked — per-file cumulative limit + file count
+# ---------------------------------------------------------------------------
+
+class TestReviewFileChunkedBudget:
+    """Chunked review_file must enforce per-file cumulative limit and
+    count the file only once in files_reviewed."""
+
+    def test_chunked_file_counted_once(self):
+        """Even with multiple chunks, files_reviewed should be 1."""
+        from scripts.stage3_llm_reviewer import review_file
+        from scripts.utils.token_budget import BudgetTracker, BUDGET_PER_FILE
+        from unittest.mock import patch
+
+        budget = BudgetTracker()
+        # Build a diff large enough to trigger chunking
+        diff = "@@ -1,3 +1,200 @@\n" + "\n".join(f"+line {i}" for i in range(200))
+
+        api_resp = (
+            '[{"file":"f.cpp","line":1,"message":"issue"}]',
+            500,   # input tokens (small so PR budget is not hit)
+            100,
+        )
+        with patch("scripts.stage3_llm_reviewer.call_anthropic_api", return_value=api_resp):
+            review_file(
+                "f.cpp", diff, "system prompt", set(), budget,
+                model="test", api_key="k",
+            )
+        assert budget.files_reviewed == 1
+
+    def test_cumulative_per_file_limit(self):
+        """Chunks should stop when cumulative input exceeds BUDGET_PER_FILE."""
+        from scripts.stage3_llm_reviewer import review_file
+        from scripts.utils.token_budget import BudgetTracker, BUDGET_PER_FILE
+        from unittest.mock import patch, call
+
+        budget = BudgetTracker(max_tokens=1_000_000, max_cost=100.0)
+
+        # Build a very large diff
+        diff = "@@ -1,3 +1,500 @@\n" + "\n".join(f"+{'x' * 100} line {i}" for i in range(500))
+
+        call_count = 0
+
+        def mock_api(*args, **kwargs):
+            nonlocal call_count
+            call_count += 1
+            # Return high actual_input to quickly hit per-file limit
+            return ('[]', 15000, 100)
+
+        with patch("scripts.stage3_llm_reviewer.call_anthropic_api", side_effect=mock_api):
+            review_file(
+                "big.cpp", diff, "sys", set(), budget,
+                model="test", api_key="k",
+            )
+
+        # With 15000 tokens per call and 20000 per-file limit,
+        # only 1 chunk should succeed (2nd would push to 30000 > 20000)
+        assert call_count == 1
+        assert budget.files_reviewed == 1

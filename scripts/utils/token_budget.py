@@ -231,6 +231,10 @@ class BudgetTracker:
     def record_usage(self, input_tokens: int, output_tokens: int) -> None:
         """Record actual token usage after an API call.
 
+        Also increments ``files_reviewed`` — use for single-call file reviews.
+        For chunked reviews, use :meth:`record_chunk_usage` per chunk and
+        :meth:`record_file_reviewed` once after all chunks.
+
         Args:
             input_tokens: Actual input tokens used.
             output_tokens: Actual output tokens used.
@@ -238,6 +242,21 @@ class BudgetTracker:
         self.total_input_tokens += input_tokens
         self.total_output_tokens += output_tokens
         self.total_cost += estimate_cost(input_tokens, output_tokens)
+        self.files_reviewed += 1
+
+    def record_chunk_usage(self, input_tokens: int, output_tokens: int) -> None:
+        """Record token usage for a single chunk without incrementing file count.
+
+        Args:
+            input_tokens: Actual input tokens used.
+            output_tokens: Actual output tokens used.
+        """
+        self.total_input_tokens += input_tokens
+        self.total_output_tokens += output_tokens
+        self.total_cost += estimate_cost(input_tokens, output_tokens)
+
+    def record_file_reviewed(self) -> None:
+        """Increment the file-reviewed counter by one."""
         self.files_reviewed += 1
 
     def record_skip(self) -> None:
