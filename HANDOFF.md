@@ -13,8 +13,8 @@
 - ✅ **Step 1 완료** (설정 파일 생성)
 - ✅ **Step 2 완료** (테스트 픽스처 + Gate Checker)
 - ✅ **Step 3 완료** (Stage 1 — regex 패턴 매칭 + clang-format suggestion)
+- ✅ **Step 4 완료** (PR 코멘트 게시 — post_review + gh_api 확장)
 - ✅ **Step 5 완료** (Stage 2 — clang-tidy 정적 분석)
-- 🔜 **Step 4 진행 예정** (PR 코멘트 게시) 또는 **Step 6** (Stage 3 LLM 리뷰)
 
 **전체 계획:** `PLAN.md` 참조
 
@@ -233,10 +233,7 @@ python -m scripts.stage2_tidy_to_suggestions \
 
 ---
 
-## 🔜 다음 작업: Step 4 또는 Step 6
-
-### Step 4: PR 코멘트 게시
-**상세 스펙:** `docs/steps/STEP4_POST_REVIEW.md`
+## 🔜 다음 작업: Step 6
 
 ### Step 6: Stage 3 — LLM 리뷰
 **상세 스펙:** `docs/steps/STEP6_STAGE3.md`
@@ -255,22 +252,24 @@ ue5-review-bot/
 │   ├── .editorconfig
 │   ├── checklist.yml            # (Step 3에서 regex 버그 수정)
 │   └── gate_config.yml
-├── scripts/                     # ✅ Step 2 + Step 3 + Step 5 완료
+├── scripts/                     # ✅ Step 2 + Step 3 + Step 4 + Step 5 완료
 │   ├── __init__.py
 │   ├── gate_checker.py          # Gate 로직 (대규모 PR 판정)
 │   ├── stage1_pattern_checker.py # ✅ Stage 1 regex 패턴 검사
 │   ├── stage1_format_diff.py    # ✅ clang-format suggestion 생성
 │   ├── stage2_tidy_to_suggestions.py # ✅ Stage 2 clang-tidy 변환
+│   ├── post_review.py           # ✅ PR Review 게시 (findings 통합)
 │   └── utils/
 │       ├── __init__.py
 │       ├── diff_parser.py       # ✅ unified diff 파싱 유틸
 │       └── gh_api.py            # GitHub API 유틸리티
-├── tests/                       # ✅ Step 2 + Step 3 + Step 5 완료
+├── tests/                       # ✅ Step 2 + Step 3 + Step 4 + Step 5 완료
 │   ├── __init__.py
 │   ├── test_gate_checker.py     # Gate Checker 테스트 (50개)
 │   ├── test_pattern_checker.py  # ✅ 패턴 검사 테스트 (71개)
 │   ├── test_format_diff.py      # ✅ 포맷 suggestion 테스트 (21개)
 │   ├── test_stage2.py           # ✅ Stage 2 변환 테스트 (43개)
+│   ├── test_post_review.py      # ✅ PR Review 게시 테스트 (58개)
 │   └── fixtures/
 │       ├── sample_bad.cpp       # 규칙 위반 샘플
 │       ├── sample_good.cpp      # 규칙 준수 샘플 (Step 3에서 수정)
@@ -296,6 +295,7 @@ ue5-review-bot/
 - **Step 1 브랜치:** `claude/review-plan-step1-D8194` (이미 푸시됨)
 - **Step 2 브랜치:** `claude/implement-step2-gate-pEDwB` (이미 푸시됨)
 - **Step 3 브랜치:** `claude/review-handoff-R5lJ4`
+- **Step 4 브랜치:** `claude/step4-post-review-H20Qe`
 - **푸시 명령:** `git push -u origin <branch-name>`
 - **실패 시:** 최대 4회 재시도 (exponential backoff: 2s, 4s, 8s, 16s)
 
