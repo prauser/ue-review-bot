@@ -264,7 +264,12 @@ def parse_llm_response(response_text: str) -> List[Dict[str, Any]]:
     """Parse the LLM response text into a list of findings.
 
     Handles cases where the response contains markdown code fences or
-    extra text around the JSON array.
+    extra text around the JSON array.  The parser tries multiple
+    strategies to extract the JSON array robustly:
+
+    1. Extract content inside markdown code fences first (highest priority).
+    2. Iterate over every ``[`` position and attempt ``json.loads`` from
+       there, guarding against false matches like ``[주의]``.
 
     Args:
         response_text: Raw text response from the LLM.
@@ -274,35 +279,70 @@ def parse_llm_response(response_text: str) -> List[Dict[str, Any]]:
     """
     text = response_text.strip()
 
-    # Remove markdown code fences if present
-    if text.startswith("```"):
-        lines = text.split("\n")
-        # Remove first line (```json or ```)
-        lines = lines[1:]
-        # Remove last line (```)
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        text = "\n".join(lines).strip()
+    # Strategy 1: Extract content inside markdown code fences.
+    fence_content = _extract_fenced_content(text)
+    if fence_content is not None:
+        result = _try_parse_json_array(fence_content)
+        if result is not None:
+            return result
 
-    # Try to find a JSON array in the text
-    start = text.find("[")
-    end = text.rfind("]")
+    # Strategy 2: Try every '[' position to find a valid JSON array.
+    # This avoids false matches like "[주의]" before the real array.
+    pos = 0
+    while True:
+        start = text.find("[", pos)
+        if start == -1:
+            break
+        try:
+            data = json.loads(text[start:])
+            if isinstance(data, list):
+                return data
+        except json.JSONDecodeError:
+            pass
+        # Also try with trailing text trimmed at the matching ']'
+        end = text.rfind("]", start)
+        if end > start:
+            try:
+                data = json.loads(text[start : end + 1])
+                if isinstance(data, list):
+                    return data
+            except json.JSONDecodeError:
+                pass
+        pos = start + 1
 
-    if start == -1 or end == -1 or end < start:
-        logger.warning("No JSON array found in LLM response")
-        return []
+    logger.warning("No JSON array found in LLM response")
+    return []
 
-    json_text = text[start : end + 1]
 
+def _extract_fenced_content(text: str) -> Optional[str]:
+    """Extract text inside the first markdown code fence, if present."""
+    if "```" not in text:
+        return None
+    lines = text.split("\n")
+    inside = False
+    content_lines: List[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if not inside and stripped.startswith("```"):
+            inside = True
+            continue
+        if inside and stripped == "```":
+            break
+        if inside:
+            content_lines.append(line)
+    return "\n".join(content_lines).strip() if content_lines else None
+
+
+def _try_parse_json_array(text: str) -> Optional[List[Dict[str, Any]]]:
+    """Try to parse text as a JSON array. Returns None on failure."""
+    text = text.strip()
     try:
-        data = json.loads(json_text)
+        data = json.loads(text)
         if isinstance(data, list):
             return data
-        logger.warning("LLM response JSON is not an array: %s", type(data).__name__)
-        return []
-    except json.JSONDecodeError as e:
-        logger.warning("Failed to parse LLM response JSON: %s", e)
-        return []
+    except json.JSONDecodeError:
+        pass
+    return None
 
 
 def validate_finding(finding: Dict[str, Any], file_path: str) -> Dict[str, Any]:
@@ -513,8 +553,13 @@ def review_file(
     total_input = system_tokens + user_tokens
 
     if total_input > BUDGET_PER_FILE:
-        # Try chunking the diff
-        chunks = chunk_diff(diff_text, BUDGET_PER_FILE - system_tokens)
+        # Try chunking the diff.
+        # Estimate wrapper overhead: build_user_message adds file header, code
+        # fences, and instruction text around the diff content.  Measure this
+        # with an empty diff so we subtract it from the per-chunk budget.
+        wrapper_overhead = estimate_tokens(build_user_message(file_path, ""))
+        chunk_budget = max(BUDGET_PER_FILE - system_tokens - wrapper_overhead, 1000)
+        chunks = chunk_diff(diff_text, chunk_budget)
         all_findings: List[Dict[str, Any]] = []
         for i, chunk in enumerate(chunks):
             # Include full source only in first chunk, and only if it fits
@@ -655,17 +700,26 @@ def review_pr(
 def _reconstruct_file_diff(file_diff) -> str:
     """Reconstruct a unified diff text from a FileDiff object.
 
+    Rebuilds ``@@ ... @@`` hunk headers from the stored start/end
+    metadata so that the LLM receives line-number context.
+
     Args:
         file_diff: FileDiff dataclass instance from diff_parser.
 
     Returns:
-        Unified diff text string showing hunks with context.
+        Unified diff text string showing hunks with headers.
     """
     lines = []
     for hunk in file_diff.hunks:
         content = hunk.get("content", "")
-        if content:
-            lines.append(content)
+        if not content:
+            continue
+        start = hunk.get("start", 0)
+        end = hunk.get("end", start)
+        length = end - start + 1 if end >= start else 1
+        # Reconstruct @@ header so the LLM knows the line range.
+        lines.append(f"@@ -{start},{length} +{start},{length} @@")
+        lines.append(content)
     return "\n".join(lines)
 
 

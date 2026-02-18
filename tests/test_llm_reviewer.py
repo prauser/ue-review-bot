@@ -933,16 +933,19 @@ class TestCLI:
 class TestReconstructFileDiff:
     """Tests for _reconstruct_file_diff."""
 
-    def test_basic_reconstruction(self):
+    def test_basic_reconstruction_includes_header(self):
         from scripts.utils.diff_parser import FileDiff
 
         fd = FileDiff(
             path="Source/MyActor.cpp",
             added_lines={12: "auto x = 1;"},
-            hunks=[{"start": 10, "end": 14, "content": "@@ -10,3 +10,4 @@\n line\n+auto x = 1;"}],
+            hunks=[{"start": 10, "end": 14, "content": " line\n+auto x = 1;"}],
         )
         result = _reconstruct_file_diff(fd)
-        assert "@@ -10,3 +10,4 @@" in result
+        # Should now contain a reconstructed @@ header
+        assert "@@ -10," in result
+        assert "+10," in result
+        assert "+auto x = 1;" in result
 
     def test_empty_hunks(self):
         from scripts.utils.diff_parser import FileDiff
@@ -950,6 +953,20 @@ class TestReconstructFileDiff:
         fd = FileDiff(path="Source/Empty.cpp")
         result = _reconstruct_file_diff(fd)
         assert result.strip() == ""
+
+    def test_multiple_hunks_each_get_header(self):
+        from scripts.utils.diff_parser import FileDiff
+
+        fd = FileDiff(
+            path="Source/A.cpp",
+            hunks=[
+                {"start": 5, "end": 10, "content": " ctx\n+added1"},
+                {"start": 50, "end": 55, "content": " ctx\n+added2"},
+            ],
+        )
+        result = _reconstruct_file_diff(fd)
+        assert "@@ -5," in result
+        assert "@@ -50," in result
 
 
 # ---------------------------------------------------------------------------
@@ -1074,3 +1091,77 @@ class TestChunkingPerFileBudget:
         call_args = mock_api.call_args
         user_msg = call_args[0][1]
         assert "int x;" not in user_msg or len(user_msg) < len(huge_source)
+
+
+# ---------------------------------------------------------------------------
+# Tests: JSON extraction hardening (review comment fix #3)
+# ---------------------------------------------------------------------------
+
+
+class TestJsonExtractionHardening:
+    """parse_llm_response must handle non-JSON brackets before the real array."""
+
+    def test_bracket_in_preamble_text(self):
+        """[주의] style text before JSON should not break extraction."""
+        response = '[주의] 다음 이슈입니다:\n\n[{"file": "a.cpp", "line": 1, "severity": "warning", "category": "c", "message": "m"}]'
+        findings = parse_llm_response(response)
+        assert len(findings) == 1
+        assert findings[0]["file"] == "a.cpp"
+
+    def test_multiple_non_json_brackets(self):
+        """Multiple non-JSON brackets should be skipped."""
+        response = 'See [docs] and [API] reference.\n[{"file": "b.cpp", "line": 5}]'
+        findings = parse_llm_response(response)
+        assert len(findings) == 1
+        assert findings[0]["file"] == "b.cpp"
+
+    def test_code_fence_takes_priority(self):
+        """Code fence content is parsed first even if brackets exist outside."""
+        response = '[참고]\n```json\n[{"file": "c.cpp", "line": 3}]\n```\n[끝]'
+        findings = parse_llm_response(response)
+        assert len(findings) == 1
+        assert findings[0]["file"] == "c.cpp"
+
+    def test_no_brackets_at_all(self):
+        findings = parse_llm_response("No issues found in this code.")
+        assert findings == []
+
+    def test_only_non_json_brackets(self):
+        findings = parse_llm_response("[주의] 이것은 JSON이 아닙니다 [참고]")
+        assert findings == []
+
+
+# ---------------------------------------------------------------------------
+# Tests: wrapper overhead in chunk budget (review comment fix #1 regression)
+# ---------------------------------------------------------------------------
+
+
+class TestWrapperOverheadAccounting:
+    """chunk_diff budget should account for build_user_message wrapper."""
+
+    @patch("scripts.stage3_llm_reviewer.call_anthropic_api")
+    def test_chunks_not_skipped_due_to_wrapper(self, mock_api):
+        """Chunks should fit within BUDGET_PER_FILE after wrapping."""
+        mock_api.return_value = ("[]", 500, 50)
+
+        # Build a diff whose raw size is near BUDGET_PER_FILE but
+        # would exceed it once wrapped without overhead accounting.
+        budget = BudgetTracker(max_tokens=500_000, max_cost=10.0)
+
+        # Make a diff with many hunks that needs chunking
+        hunks = []
+        for i in range(50):
+            hunks.append(f"@@ -{i*10+1},5 +{i*10+1},6 @@\n")
+            hunks.append("+" + "x" * 200 + "\n")
+        diff = "--- a/f.cpp\n+++ b/f.cpp\n" + "".join(hunks)
+
+        findings = review_file(
+            "Source/F.cpp",
+            diff,
+            build_system_prompt(True),
+            set(),
+            budget,
+        )
+
+        # At least one chunk should have been sent to the API
+        assert mock_api.called
