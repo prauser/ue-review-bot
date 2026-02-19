@@ -1281,7 +1281,8 @@ class TestSubChunkHunkHeader:
 
     def test_all_sub_chunks_have_hunk_header(self):
         """When a single hunk is split by lines, each sub-chunk must keep
-        both the file header and the @@ hunk header."""
+        both the file header and a recalculated @@ hunk header."""
+        import re
         from scripts.utils.token_budget import chunk_diff
 
         # Build a diff with one enormous hunk that will need line splitting
@@ -1299,8 +1300,13 @@ class TestSubChunkHunkHeader:
             assert "--- a/Big.cpp" in chunk, (
                 f"Sub-chunk {i} missing file header"
             )
-            assert "@@ -1,5 +1,205 @@ void BigFunction()" in chunk, (
+            # Each sub-chunk must have a valid @@ header (recalculated).
+            assert re.search(r"@@\s+-\d+,\d+\s+\+\d+,\d+\s+@@", chunk), (
                 f"Sub-chunk {i} missing @@ hunk header"
+            )
+            # Function annotation should be preserved.
+            assert "void BigFunction()" in chunk, (
+                f"Sub-chunk {i} missing function annotation"
             )
 
     def test_sub_chunk_body_content_preserved(self):
@@ -1915,3 +1921,122 @@ class TestSplitByLinesOversizedLine:
         long_line = "z" * 600
         chunks = _split_by_lines(long_line, max_tokens=50)
         assert all(len(c) > 0 for c in chunks)
+
+    def test_diff_prefix_preserved_on_split(self):
+        """All fragments of a long diff line must keep the +/- prefix."""
+        from scripts.utils.token_budget import _split_by_lines
+
+        long_add_line = "+" + "a" * 900
+        chunks = _split_by_lines(long_add_line, max_tokens=100)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            assert chunk.startswith("+"), f"Missing '+' prefix: {chunk[:20]!r}"
+
+    def test_diff_prefix_preserved_deletion(self):
+        from scripts.utils.token_budget import _split_by_lines
+
+        long_del_line = "-" + "d" * 900
+        chunks = _split_by_lines(long_del_line, max_tokens=100)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            assert chunk.startswith("-"), f"Missing '-' prefix: {chunk[:20]!r}"
+
+    def test_context_prefix_preserved(self):
+        from scripts.utils.token_budget import _split_by_lines
+
+        long_ctx_line = " " + "c" * 900
+        chunks = _split_by_lines(long_ctx_line, max_tokens=100)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            assert chunk.startswith(" "), f"Missing ' ' prefix: {chunk[:20]!r}"
+
+
+# ---------------------------------------------------------------------------
+# Tests: chunk_diff sub-chunk hunk header recalculation (review comment fix)
+# ---------------------------------------------------------------------------
+
+class TestChunkDiffHunkHeaderRecalculation:
+    """When a hunk is split, each sub-chunk must get correct @@ headers."""
+
+    def test_sub_chunks_have_distinct_headers(self):
+        from scripts.utils.token_budget import chunk_diff
+        import re
+
+        # Build a single large hunk that will be split.
+        header = "--- a/f.cpp\n+++ b/f.cpp\n"
+        lines = ["+added line " + str(i) for i in range(200)]
+        hunk = "@@ -1,0 +1,200 @@ void func()\n" + "\n".join(lines)
+        diff = header + hunk
+
+        chunks = chunk_diff(diff, max_tokens=300)
+        assert len(chunks) > 1
+
+        # Each chunk must have a valid @@ header.
+        headers_seen = []
+        for chunk in chunks:
+            m = re.search(r"@@\s+-(\d+),(\d+)\s+\+(\d+),(\d+)\s+@@", chunk)
+            assert m, f"No valid @@ header in chunk: {chunk[:80]!r}"
+            headers_seen.append((
+                int(m.group(1)), int(m.group(2)),
+                int(m.group(3)), int(m.group(4)),
+            ))
+
+        # Successive sub-chunks must have increasing start lines.
+        for i in range(1, len(headers_seen)):
+            assert headers_seen[i][2] > headers_seen[i - 1][2], (
+                f"new_start did not increase: {headers_seen}"
+            )
+
+    def test_sub_chunk_line_counts_match_body(self):
+        from scripts.utils.token_budget import chunk_diff
+        import re
+
+        header = "--- a/f.cpp\n+++ b/f.cpp\n"
+        # Mix of additions, deletions and context to test counting.
+        lines = []
+        for i in range(150):
+            if i % 3 == 0:
+                lines.append("+add " + str(i))
+            elif i % 3 == 1:
+                lines.append("-del " + str(i))
+            else:
+                lines.append(" ctx " + str(i))
+        hunk = "@@ -1,50 +1,100 @@\n" + "\n".join(lines)
+        diff = header + hunk
+
+        chunks = chunk_diff(diff, max_tokens=300)
+        assert len(chunks) > 1
+
+        for chunk in chunks:
+            m = re.search(r"@@\s+-(\d+),(\d+)\s+\+(\d+),(\d+)\s+@@", chunk)
+            assert m
+            claimed_old_len = int(m.group(2))
+            claimed_new_len = int(m.group(4))
+
+            # Count actual lines in body (after the @@ header line).
+            body_start = chunk.find("@@\n")
+            if body_start == -1:
+                body_start = chunk.find("@@")
+                # find end of @@ line
+                nl = chunk.find("\n", body_start)
+                body = chunk[nl + 1:] if nl != -1 else ""
+            else:
+                body = chunk[body_start + 3:]
+
+            actual_old = 0
+            actual_new = 0
+            for ln in body.split("\n"):
+                if ln.startswith("+"):
+                    actual_new += 1
+                elif ln.startswith("-"):
+                    actual_old += 1
+                elif ln:
+                    actual_old += 1
+                    actual_new += 1
+
+            assert claimed_old_len == actual_old, (
+                f"old_len mismatch: header says {claimed_old_len}, body has {actual_old}"
+            )
+            assert claimed_new_len == actual_new, (
+                f"new_len mismatch: header says {claimed_new_len}, body has {actual_new}"
+            )

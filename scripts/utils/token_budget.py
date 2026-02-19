@@ -139,16 +139,41 @@ def chunk_diff(file_diff: str, max_tokens: int = BUDGET_PER_FILE) -> List[str]:
                 # Extract @@ header line so every sub-chunk retains it.
                 hunk_first_nl = hunk.find("\n")
                 if hunk_first_nl != -1:
-                    hunk_hdr = hunk[: hunk_first_nl + 1]  # includes newline
+                    hunk_hdr_line = hunk[: hunk_first_nl]  # without newline
                     hunk_body = hunk[hunk_first_nl + 1 :]
                 else:
-                    hunk_hdr = hunk
+                    hunk_hdr_line = hunk
                     hunk_body = ""
-                prefix = header + hunk_hdr
-                prefix_tokens = estimate_tokens(prefix)
+
+                # Parse original start lines from @@ header.
+                hdr_match = re.match(
+                    r"@@\s+-(\d+)(?:,\d+)?\s+\+(\d+)(?:,\d+)?\s+@@",
+                    hunk_hdr_line,
+                )
+                old_start = int(hdr_match.group(1)) if hdr_match else 1
+                new_start = int(hdr_match.group(2)) if hdr_match else 1
+
+                # Estimate prefix token cost for budget calculation.
+                sample_prefix = header + hunk_hdr_line + "\n"
+                prefix_tokens = estimate_tokens(sample_prefix)
                 body_budget = max(max_tokens - prefix_tokens, 100)
                 sub_chunks = _split_by_lines(hunk_body, body_budget)
-                chunks.extend(prefix + sc for sc in sub_chunks)
+
+                # Rewrite @@ header per sub-chunk with correct line ranges.
+                for sc in sub_chunks:
+                    new_hdr = _rewrite_hunk_header(
+                        hunk_hdr_line, old_start, new_start, sc,
+                    )
+                    chunks.append(header + new_hdr + "\n" + sc)
+                    # Advance start lines for the next sub-chunk.
+                    for ln in sc.split("\n"):
+                        if ln.startswith("+"):
+                            new_start += 1
+                        elif ln.startswith("-"):
+                            old_start += 1
+                        elif ln:
+                            old_start += 1
+                            new_start += 1
                 current = header
             else:
                 current = header + hunk
@@ -159,6 +184,38 @@ def chunk_diff(file_diff: str, max_tokens: int = BUDGET_PER_FILE) -> List[str]:
         chunks.append(current)
 
     return chunks if chunks else [file_diff]
+
+
+def _rewrite_hunk_header(
+    original_header: str,
+    old_start: int,
+    new_start: int,
+    body: str,
+) -> str:
+    """Rewrite a ``@@ ... @@`` header to match *body*'s actual line counts.
+
+    Counts context / addition / deletion lines in *body* and produces
+    ``@@ -old_start,old_len +new_start,new_len @@`` (preserving any
+    trailing function-name annotation from the original header).
+    """
+    old_len = 0
+    new_len = 0
+    for ln in body.split("\n"):
+        if ln.startswith("+"):
+            new_len += 1
+        elif ln.startswith("-"):
+            old_len += 1
+        else:
+            # context line (or empty line from split)
+            if ln:  # skip truly empty trailing lines
+                old_len += 1
+                new_len += 1
+
+    # Preserve trailing annotation after the closing @@, e.g. " funcName"
+    m = re.match(r"@@\s[^@]*@@(.*)", original_header)
+    annotation = m.group(1) if m else ""
+
+    return f"@@ -{old_start},{old_len} +{new_start},{new_len} @@{annotation}"
 
 
 def _split_by_lines(text: str, max_tokens: int) -> List[str]:
@@ -183,11 +240,18 @@ def _split_by_lines(text: str, max_tokens: int) -> List[str]:
             chunks.append("\n".join(current_lines))
             current_lines = []
             current_tokens = 0
-        # Single line exceeds budget — split by characters.
+        # Single line exceeds budget — split by characters, preserving
+        # any leading diff prefix (+/-/ ) on every fragment.
         if line_tokens > max_tokens:
-            chars_per_chunk = max(max_tokens * 3, 1)  # inverse of len//3
-            for start in range(0, len(line), chars_per_chunk):
-                chunks.append(line[start : start + chars_per_chunk])
+            prefix = ""
+            content = line
+            if line and line[0] in ("+", "-", " "):
+                prefix = line[0]
+                content = line[1:]
+            prefix_overhead = len(prefix)
+            chars_per_chunk = max(max_tokens * 3 - prefix_overhead, 1)
+            for start in range(0, len(content), chars_per_chunk):
+                chunks.append(prefix + content[start : start + chars_per_chunk])
             continue
         current_lines.append(line)
         current_tokens += line_tokens
