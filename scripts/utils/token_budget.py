@@ -167,6 +167,9 @@ def _split_by_lines(text: str, max_tokens: int) -> List[str]:
     Each line is counted as at least 1 token (even if ``estimate_tokens``
     returns 0 for very short lines) plus 1 token for the newline separator
     so that many short lines don't accumulate into an oversized chunk.
+
+    If a single line exceeds ``max_tokens``, it is further split by
+    characters so that no chunk exceeds the budget.
     """
     lines = text.split("\n")
     chunks: List[str] = []
@@ -180,6 +183,12 @@ def _split_by_lines(text: str, max_tokens: int) -> List[str]:
             chunks.append("\n".join(current_lines))
             current_lines = []
             current_tokens = 0
+        # Single line exceeds budget — split by characters.
+        if line_tokens > max_tokens:
+            chars_per_chunk = max(max_tokens * 3, 1)  # inverse of len//3
+            for start in range(0, len(line), chars_per_chunk):
+                chunks.append(line[start : start + chars_per_chunk])
+            continue
         current_lines.append(line)
         current_tokens += line_tokens
 

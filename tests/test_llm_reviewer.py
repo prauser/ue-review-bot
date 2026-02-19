@@ -1874,3 +1874,44 @@ class TestReconstructFileDiffOldStart:
         result = _reconstruct_file_diff(fd)
         # Falls back to new_start when old_start is absent
         assert "@@ -20," in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: _split_by_lines oversized single line (review comment fix)
+# ---------------------------------------------------------------------------
+
+class TestSplitByLinesOversizedLine:
+    """Single lines exceeding max_tokens must be split by characters."""
+
+    def test_single_long_line_split(self):
+        from scripts.utils.token_budget import _split_by_lines, estimate_tokens
+
+        # A single line of ~300 tokens (900 chars at 3 chars/token)
+        long_line = "x" * 900
+        assert estimate_tokens(long_line) == 300
+
+        chunks = _split_by_lines(long_line, max_tokens=100)
+        assert len(chunks) > 1
+        for chunk in chunks:
+            assert estimate_tokens(chunk) <= 100
+
+    def test_long_line_among_short_lines(self):
+        from scripts.utils.token_budget import _split_by_lines, estimate_tokens
+
+        lines = ["short"] * 5 + ["y" * 900] + ["short"] * 5
+        text = "\n".join(lines)
+
+        chunks = _split_by_lines(text, max_tokens=100)
+        # All chunks should be within budget
+        for chunk in chunks:
+            assert estimate_tokens(chunk) <= 100
+        # All content should be preserved
+        all_text = "".join(chunks)
+        assert "y" * 900 in all_text.replace("\n", "")
+
+    def test_no_empty_chunks(self):
+        from scripts.utils.token_budget import _split_by_lines
+
+        long_line = "z" * 600
+        chunks = _split_by_lines(long_line, max_tokens=50)
+        assert all(len(c) > 0 for c in chunks)
