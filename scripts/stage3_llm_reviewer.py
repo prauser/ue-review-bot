@@ -202,16 +202,16 @@ def build_user_message(
     return "\n".join(parts)
 
 
-def load_exclude_findings(file_paths: List[str]) -> Set[Tuple[str, int]]:
+def load_exclude_findings(file_paths: List[str]) -> Set[Tuple[str, int, str]]:
     """Load findings from Stage 1/2 to exclude from Stage 3 review.
 
     Args:
         file_paths: Paths to JSON finding files from earlier stages.
 
     Returns:
-        Set of (file, line) tuples to exclude.
+        Set of (file, line, rule_id) tuples to exclude.
     """
-    excluded: Set[Tuple[str, int]] = set()
+    excluded: Set[Tuple[str, int, str]] = set()
 
     for fp in file_paths:
         path = Path(fp)
@@ -231,8 +231,12 @@ def load_exclude_findings(file_paths: List[str]) -> Set[Tuple[str, int]]:
                     line = int(finding.get("line", 0))
                 except (TypeError, ValueError):
                     continue
+                # Match post_review.deduplicate_findings: use rule_id or category.
+                rule_id = finding.get("rule_id") or finding.get("category", "")
+                if not isinstance(rule_id, str):
+                    rule_id = str(rule_id)
                 if file and line > 0:
-                    excluded.add((file, line))
+                    excluded.add((file, line, rule_id))
         except (json.JSONDecodeError, OSError) as e:
             logger.warning("Failed to load exclude findings from %s: %s", fp, e)
 
@@ -241,13 +245,16 @@ def load_exclude_findings(file_paths: List[str]) -> Set[Tuple[str, int]]:
 
 def filter_excluded(
     findings: List[Dict[str, Any]],
-    excluded: Set[Tuple[str, int]],
+    excluded: Set[Tuple[str, int, str]],
 ) -> List[Dict[str, Any]]:
     """Remove findings that overlap with Stage 1/2 results.
 
+    Only excludes when *both* the location (file + line) and the rule
+    identifier match, so that a different rule on the same line is kept.
+
     Args:
         findings: Raw findings from LLM response.
-        excluded: Set of (file, line) tuples from earlier stages.
+        excluded: Set of (file, line, rule_id) tuples from earlier stages.
 
     Returns:
         Filtered list of findings.
@@ -259,7 +266,8 @@ def filter_excluded(
             line = int(f.get("line", 0))
         except (TypeError, ValueError):
             line = 0
-        if (file, line) not in excluded:
+        rule_id = f.get("rule_id") or f.get("category", "")
+        if (file, line, rule_id) not in excluded:
             result.append(f)
     return result
 

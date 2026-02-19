@@ -479,8 +479,8 @@ class TestExcludeFindings:
         f.write_text(json.dumps(findings))
 
         excluded = load_exclude_findings([str(f)])
-        assert ("Source/A.cpp", 10) in excluded
-        assert ("Source/A.cpp", 20) in excluded
+        assert ("Source/A.cpp", 10, "logtemp") in excluded
+        assert ("Source/A.cpp", 20, "format") in excluded
 
     def test_load_missing_file(self):
         excluded = load_exclude_findings(["/nonexistent/file.json"])
@@ -488,21 +488,21 @@ class TestExcludeFindings:
 
     def test_load_multiple_files(self, tmp_path):
         f1 = tmp_path / "s1.json"
-        f1.write_text(json.dumps([{"file": "a.cpp", "line": 1}]))
+        f1.write_text(json.dumps([{"file": "a.cpp", "line": 1, "rule_id": "r1"}]))
         f2 = tmp_path / "s2.json"
-        f2.write_text(json.dumps([{"file": "b.cpp", "line": 2}]))
+        f2.write_text(json.dumps([{"file": "b.cpp", "line": 2, "rule_id": "r2"}]))
 
         excluded = load_exclude_findings([str(f1), str(f2)])
-        assert ("a.cpp", 1) in excluded
-        assert ("b.cpp", 2) in excluded
+        assert ("a.cpp", 1, "r1") in excluded
+        assert ("b.cpp", 2, "r2") in excluded
 
     def test_filter_excluded(self):
         findings = [
-            {"file": "a.cpp", "line": 10, "message": "keep"},
-            {"file": "a.cpp", "line": 20, "message": "exclude"},
-            {"file": "b.cpp", "line": 5, "message": "keep too"},
+            {"file": "a.cpp", "line": 10, "rule_id": "r1", "message": "keep"},
+            {"file": "a.cpp", "line": 20, "rule_id": "r2", "message": "exclude"},
+            {"file": "b.cpp", "line": 5, "rule_id": "r3", "message": "keep too"},
         ]
-        excluded = {("a.cpp", 20)}
+        excluded = {("a.cpp", 20, "r2")}
         result = filter_excluded(findings, excluded)
         assert len(result) == 2
         assert result[0]["message"] == "keep"
@@ -514,10 +514,41 @@ class TestExcludeFindings:
         assert len(result) == 1
 
     def test_filter_all_excluded(self):
-        findings = [{"file": "a.cpp", "line": 10}]
-        excluded = {("a.cpp", 10)}
+        findings = [{"file": "a.cpp", "line": 10, "rule_id": "r1"}]
+        excluded = {("a.cpp", 10, "r1")}
         result = filter_excluded(findings, excluded)
         assert len(result) == 0
+
+    def test_different_rule_same_line_kept(self):
+        """Stage 3 finding with a different rule on the same line must survive."""
+        findings = [
+            {"file": "a.cpp", "line": 10, "category": "gc_safety", "message": "GC issue"},
+        ]
+        # Stage 1 flagged logtemp on the same line — different rule.
+        excluded = {("a.cpp", 10, "logtemp")}
+        result = filter_excluded(findings, excluded)
+        assert len(result) == 1
+        assert result[0]["category"] == "gc_safety"
+
+    def test_same_rule_same_line_excluded(self):
+        """Same rule on same line must still be excluded."""
+        findings = [
+            {"file": "a.cpp", "line": 10, "rule_id": "logtemp", "message": "dup"},
+        ]
+        excluded = {("a.cpp", 10, "logtemp")}
+        result = filter_excluded(findings, excluded)
+        assert len(result) == 0
+
+    def test_load_uses_category_fallback(self, tmp_path):
+        """Findings with category (no rule_id) should use category as key."""
+        data = [
+            {"file": "a.cpp", "line": 5, "category": "thread_safety"},
+        ]
+        f = tmp_path / "s3.json"
+        f.write_text(json.dumps(data))
+
+        excluded = load_exclude_findings([str(f)])
+        assert ("a.cpp", 5, "thread_safety") in excluded
 
 
 # ---------------------------------------------------------------------------
@@ -582,7 +613,7 @@ class TestReviewFile:
         # LLM returns findings on lines 12 and 13
         mock_api.return_value = (SAMPLE_LLM_RESPONSE, 500, 200)
 
-        excluded = {("Source/MyActor.cpp", 12)}
+        excluded = {("Source/MyActor.cpp", 12, "convention")}
         budget = BudgetTracker()
         findings = review_file(
             "Source/MyActor.cpp",
@@ -592,7 +623,7 @@ class TestReviewFile:
             budget,
         )
 
-        # Line 12 should be excluded, only line 13 remains
+        # Line 12 with rule "convention" should be excluded, only line 13 remains
         assert len(findings) == 1
         assert findings[0]["line"] == 13
 
@@ -720,10 +751,10 @@ class TestReviewPr:
         ])
         mock_api.return_value = (response, 500, 200)
 
-        # Create exclude file with line 12
+        # Create exclude file with same rule on line 12 — should be excluded.
         exclude_file = tmp_path / "stage1.json"
         exclude_file.write_text(json.dumps([
-            {"file": "Source/MyActor.cpp", "line": 12, "rule_id": "logtemp"},
+            {"file": "Source/MyActor.cpp", "line": 12, "rule_id": "conv"},
         ]))
 
         findings, summary = review_pr(
@@ -731,7 +762,7 @@ class TestReviewPr:
             exclude_files=[str(exclude_file)],
         )
 
-        # Line 12 should be excluded
+        # Line 12 with same rule should be excluded
         assert len(findings) == 1
         assert findings[0]["line"] == 99
 
@@ -906,7 +937,7 @@ class TestCLI:
 
         exclude_file = tmp_path / "stage1.json"
         exclude_file.write_text(json.dumps([
-            {"file": "Source/MyActor.cpp", "line": 12, "rule_id": "auto"},
+            {"file": "Source/MyActor.cpp", "line": 12, "rule_id": "convention"},
         ]))
 
         output_file = tmp_path / "findings-stage3.json"
@@ -920,7 +951,7 @@ class TestCLI:
 
         assert result == 0
         findings = json.loads(output_file.read_text())
-        # Line 12 excluded, only line 13 remains
+        # Line 12 with same rule excluded, only line 13 remains
         assert len(findings) == 1
         assert findings[0]["line"] == 13
 
@@ -1392,12 +1423,12 @@ class TestValidateFindingFieldTypes:
         assert result["suggestion"] == "UPROPERTY() 추가"
 
     def test_file_as_list_hashable_in_set(self):
-        """After normalization, (file, line) must be hashable for set lookup."""
+        """After normalization, (file, line, rule_id) must be hashable for set lookup."""
         from scripts.stage3_llm_reviewer import validate_finding, filter_excluded
-        finding = {"file": ["a.cpp"], "line": 10, "message": "x"}
+        finding = {"file": ["a.cpp"], "line": 10, "message": "x", "category": "general"}
         result = validate_finding(finding, "b.cpp")
         # Must not raise unhashable type error
-        excluded = {("b.cpp", 10)}
+        excluded = {("b.cpp", 10, "general")}
         filtered = filter_excluded([result], excluded)
         assert len(filtered) == 0
 
@@ -1421,8 +1452,8 @@ class TestLoadExcludeFindingsNonDict:
         f = tmp_path / "exclude.json"
         f.write_text(json.dumps(data))
         result = load_exclude_findings([str(f)])
-        assert ("a.cpp", 10) in result
-        assert ("b.cpp", 20) in result
+        assert ("a.cpp", 10, "") in result
+        assert ("b.cpp", 20, "") in result
         assert len(result) == 2  # non-dict elements skipped
 
     def test_all_non_dict_elements(self, tmp_path):
@@ -1716,7 +1747,7 @@ class TestLoadExcludeFindingsFileType:
         f = tmp_path / "exclude.json"
         f.write_text(json.dumps(data))
         result = load_exclude_findings([str(f)])
-        assert ("b.cpp", 20) in result
+        assert ("b.cpp", 20, "") in result
         assert len(result) == 1
 
     def test_file_as_dict_skipped(self, tmp_path):
