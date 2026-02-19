@@ -461,6 +461,23 @@ class TestValidateFinding:
         result = validate_finding(raw, "a.cpp")
         assert "end_line" not in result
 
+    def test_llm_variant_path_overridden(self):
+        """LLM-provided file path is always replaced by call-context path."""
+        raw = {
+            "file": "b/Source/MyActor.cpp",
+            "line": 10,
+            "severity": "warning",
+            "message": "issue",
+        }
+        result = validate_finding(raw, "Source/MyActor.cpp")
+        assert result["file"] == "Source/MyActor.cpp"
+
+    def test_llm_correct_path_still_overridden(self):
+        """Even when LLM returns the correct path, file_path is used."""
+        raw = {"file": "Source/A.cpp", "line": 1, "severity": "warning", "message": "x"}
+        result = validate_finding(raw, "Source/A.cpp")
+        assert result["file"] == "Source/A.cpp"
+
 
 # ---------------------------------------------------------------------------
 # Tests: load_exclude_findings / filter_excluded
@@ -1563,10 +1580,12 @@ class TestValidateFindingEmptyFile:
         result = validate_finding({"file": None, "line": 1}, "fallback.cpp")
         assert result["file"] == "fallback.cpp"
 
-    def test_valid_file_preserved(self):
+    def test_file_always_uses_file_path(self):
+        """File is always forced to call-context file_path, even when LLM
+        provides a valid-looking path."""
         from scripts.stage3_llm_reviewer import validate_finding
         result = validate_finding({"file": "Source/A.cpp", "line": 1}, "fallback.cpp")
-        assert result["file"] == "Source/A.cpp"
+        assert result["file"] == "fallback.cpp"
 
 
 # ---------------------------------------------------------------------------
@@ -1953,33 +1972,48 @@ class TestSplitByLinesOversizedLine:
         chunks = _split_by_lines(long_line, max_tokens=50)
         assert all(len(c) > 0 for c in chunks)
 
-    def test_diff_prefix_preserved_on_split(self):
-        """All fragments of a long diff line must keep the +/- prefix."""
+    def test_diff_prefix_on_first_fragment_only(self):
+        """First fragment keeps +/- prefix; continuations are plain text
+        so downstream hunk-header rewriting counts one logical line."""
         from scripts.utils.token_budget import _split_by_lines
 
         long_add_line = "+" + "a" * 900
         chunks = _split_by_lines(long_add_line, max_tokens=100)
         assert len(chunks) > 1
-        for chunk in chunks:
-            assert chunk.startswith("+"), f"Missing '+' prefix: {chunk[:20]!r}"
+        assert chunks[0].startswith("+"), "First fragment must keep '+' prefix"
+        for chunk in chunks[1:]:
+            assert not chunk.startswith("+"), (
+                f"Continuation should not have '+' prefix: {chunk[:20]!r}"
+            )
 
-    def test_diff_prefix_preserved_deletion(self):
+    def test_diff_prefix_deletion_first_only(self):
         from scripts.utils.token_budget import _split_by_lines
 
         long_del_line = "-" + "d" * 900
         chunks = _split_by_lines(long_del_line, max_tokens=100)
         assert len(chunks) > 1
-        for chunk in chunks:
-            assert chunk.startswith("-"), f"Missing '-' prefix: {chunk[:20]!r}"
+        assert chunks[0].startswith("-")
+        for chunk in chunks[1:]:
+            assert not chunk.startswith("-")
 
-    def test_context_prefix_preserved(self):
+    def test_context_prefix_first_only(self):
         from scripts.utils.token_budget import _split_by_lines
 
         long_ctx_line = " " + "c" * 900
         chunks = _split_by_lines(long_ctx_line, max_tokens=100)
         assert len(chunks) > 1
-        for chunk in chunks:
-            assert chunk.startswith(" "), f"Missing ' ' prefix: {chunk[:20]!r}"
+        assert chunks[0].startswith(" ")
+
+    def test_all_content_preserved_with_prefix(self):
+        """All content from a prefixed long line must be present across fragments."""
+        from scripts.utils.token_budget import _split_by_lines
+
+        content = "x" * 900
+        long_add_line = "+" + content
+        chunks = _split_by_lines(long_add_line, max_tokens=100)
+        # Reassemble: first chunk has prefix, rest are plain
+        reassembled = chunks[0][1:] + "".join(chunks[1:])
+        assert reassembled == content
 
 
 # ---------------------------------------------------------------------------
@@ -2071,3 +2105,41 @@ class TestChunkDiffHunkHeaderRecalculation:
             assert claimed_new_len == actual_new, (
                 f"new_len mismatch: header says {claimed_new_len}, body has {actual_new}"
             )
+
+    def test_char_split_line_counts_as_one(self):
+        """A single long + line char-split into fragments must count as 1
+        logical addition, not N additions (over-increment bug)."""
+        import re
+        from scripts.utils.token_budget import chunk_diff
+
+        header = "--- a/f.cpp\n+++ b/f.cpp\n"
+        # One short context line, one very long addition, one short addition.
+        short_ctx = " ctx"
+        long_add = "+" + "x" * 3000  # ~1000 tokens, will be char-split
+        short_add = "+short"
+        hunk = "@@ -1,1 +1,3 @@\n" + "\n".join([short_ctx, long_add, short_add])
+        diff = header + hunk
+
+        chunks = chunk_diff(diff, max_tokens=400)
+        assert len(chunks) > 1, "Expected the long line to force splitting"
+
+        # Collect all @@ headers and verify new_start doesn't jump wildly.
+        all_headers = []
+        for chunk in chunks:
+            for m in re.finditer(
+                r"@@\s+-(\d+),(\d+)\s+\+(\d+),(\d+)\s+@@", chunk
+            ):
+                all_headers.append({
+                    "old_start": int(m.group(1)),
+                    "new_start": int(m.group(3)),
+                    "new_len": int(m.group(4)),
+                })
+
+        # The total new_len across all sub-chunks should equal the original 3
+        # (1 context + 1 long add + 1 short add), not inflated by fragments.
+        total_new = sum(h["new_len"] for h in all_headers)
+        # Allow context lines to be counted in both old and new.
+        # Original: 1 ctx + 2 additions = 3 new lines.
+        assert total_new <= 5, (
+            f"Total new_len {total_new} is inflated; headers: {all_headers}"
+        )

@@ -393,11 +393,10 @@ def validate_finding(finding: Dict[str, Any], file_path: str) -> Dict[str, Any]:
     """
     normalized: Dict[str, Any] = {}
 
-    # File — use LLM-provided or fallback to expected file.
-    # Force str() to prevent unhashable types (e.g. list) in downstream
-    # set lookups like filter_excluded().
-    raw_file = finding.get("file")
-    normalized["file"] = raw_file if isinstance(raw_file, str) and raw_file.strip() else file_path
+    # File — always use the caller-provided file_path.  The LLM may
+    # return path variants (e.g. "b/Source/...") that break downstream
+    # dedup key matching and inline comment placement.
+    normalized["file"] = file_path
 
     # Line numbers — coerce to int
     try:

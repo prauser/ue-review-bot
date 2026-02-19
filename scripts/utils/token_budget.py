@@ -240,18 +240,20 @@ def _split_by_lines(text: str, max_tokens: int) -> List[str]:
             chunks.append("\n".join(current_lines))
             current_lines = []
             current_tokens = 0
-        # Single line exceeds budget — split by characters, preserving
-        # any leading diff prefix (+/-/ ) on every fragment.
+        # Single line exceeds budget — split by characters.
+        # Only the *first* fragment keeps the diff prefix (+/-/ ) so that
+        # downstream hunk-header rewriting counts it as one logical line,
+        # not N lines.  Continuation fragments are plain text.
         if line_tokens > max_tokens:
             prefix = ""
             content = line
             if line and line[0] in ("+", "-", " "):
                 prefix = line[0]
                 content = line[1:]
-            prefix_overhead = len(prefix)
-            chars_per_chunk = max(max_tokens * 3 - prefix_overhead, 1)
-            for start in range(0, len(content), chars_per_chunk):
-                chunks.append(prefix + content[start : start + chars_per_chunk])
+            chars_per_chunk = max(max_tokens * 3 - len(prefix), 1)
+            for idx, start in enumerate(range(0, len(content), chars_per_chunk)):
+                fragment = content[start : start + chars_per_chunk]
+                chunks.append(prefix + fragment if idx == 0 else fragment)
             continue
         current_lines.append(line)
         current_tokens += line_tokens
