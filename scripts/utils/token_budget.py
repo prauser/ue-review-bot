@@ -167,6 +167,8 @@ def chunk_diff(file_diff: str, max_tokens: int = BUDGET_PER_FILE) -> List[str]:
                     chunks.append(header + new_hdr + "\n" + sc)
                     # Advance start lines for the next sub-chunk.
                     for ln in sc.split("\n"):
+                        if _is_diff_meta_line(ln):
+                            continue
                         if ln.startswith("+"):
                             new_start += 1
                         elif ln.startswith("-"):
@@ -186,6 +188,16 @@ def chunk_diff(file_diff: str, max_tokens: int = BUDGET_PER_FILE) -> List[str]:
     return chunks if chunks else [file_diff]
 
 
+def _is_diff_meta_line(line: str) -> bool:
+    """Return True for diff meta-lines that are not real file content.
+
+    Lines like ``\\ No newline at end of file`` appear in unified diffs
+    but do not correspond to actual source lines and must be excluded
+    from hunk length / offset calculations.
+    """
+    return line.startswith("\\")
+
+
 def _rewrite_hunk_header(
     original_header: str,
     old_start: int,
@@ -197,10 +209,14 @@ def _rewrite_hunk_header(
     Counts context / addition / deletion lines in *body* and produces
     ``@@ -old_start,old_len +new_start,new_len @@`` (preserving any
     trailing function-name annotation from the original header).
+
+    Diff meta-lines (e.g. ``\\ No newline at end of file``) are skipped.
     """
     old_len = 0
     new_len = 0
     for ln in body.split("\n"):
+        if _is_diff_meta_line(ln):
+            continue
         if ln.startswith("+"):
             new_len += 1
         elif ln.startswith("-"):

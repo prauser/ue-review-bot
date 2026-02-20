@@ -2107,3 +2107,71 @@ class TestChunkDiffHunkHeaderRecalculation:
         assert total_new <= 5, (
             f"Total new_len {total_new} is inflated; headers: {all_headers}"
         )
+
+
+# ---------------------------------------------------------------------------
+# Tests: diff meta-line exclusion from hunk header calculation
+# ---------------------------------------------------------------------------
+
+class TestDiffMetaLineExclusion:
+    r"""'\ No newline at end of file' must not be counted in hunk lengths."""
+
+    def test_rewrite_hunk_header_skips_no_newline(self):
+        from scripts.utils.token_budget import _rewrite_hunk_header
+
+        body = "+added line\n\\ No newline at end of file"
+        hdr = _rewrite_hunk_header("@@ -1,0 +1,1 @@", 1, 1, body)
+        # Only the +added line should count (new_len=1), not the meta-line.
+        assert "+1,1" in hdr
+
+    def test_rewrite_hunk_header_context_with_no_newline(self):
+        from scripts.utils.token_budget import _rewrite_hunk_header
+
+        body = " ctx\n-old\n+new\n\\ No newline at end of file"
+        hdr = _rewrite_hunk_header("@@ -1,2 +1,2 @@", 1, 1, body)
+        # ctx(old+new=1,1), -old(old=1), +new(new=1) → old=2, new=2
+        assert "-1,2" in hdr
+        assert "+1,2" in hdr
+
+    def test_chunk_diff_no_newline_line_offsets(self):
+        """Sub-chunk start lines must not be shifted by meta-lines."""
+        import re
+        from scripts.utils.token_budget import chunk_diff
+
+        header = "--- a/f.cpp\n+++ b/f.cpp\n"
+        # Build a hunk with a "no newline" marker in the middle.
+        lines = []
+        for i in range(100):
+            lines.append(f"+line {i}")
+            if i == 49:
+                lines.append("\\ No newline at end of file")
+        hunk = "@@ -1,0 +1,100 @@\n" + "\n".join(lines)
+        diff = header + hunk
+
+        chunks = chunk_diff(diff, max_tokens=300)
+        assert len(chunks) > 1
+
+        all_headers = []
+        for chunk in chunks:
+            m = re.search(r"@@\s+-(\d+),(\d+)\s+\+(\d+),(\d+)\s+@@", chunk)
+            if m:
+                all_headers.append({
+                    "new_start": int(m.group(3)),
+                    "new_len": int(m.group(4)),
+                })
+
+        # Total new_len should equal 100 additions, not 101.
+        total_new = sum(h["new_len"] for h in all_headers)
+        assert total_new == 100, (
+            f"Expected 100 new lines, got {total_new}; headers: {all_headers}"
+        )
+
+    def test_is_diff_meta_line(self):
+        from scripts.utils.token_budget import _is_diff_meta_line
+
+        assert _is_diff_meta_line("\\ No newline at end of file")
+        assert _is_diff_meta_line("\\")
+        assert not _is_diff_meta_line("+added")
+        assert not _is_diff_meta_line("-removed")
+        assert not _is_diff_meta_line(" context")
+        assert not _is_diff_meta_line("")
