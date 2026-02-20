@@ -202,16 +202,23 @@ def build_user_message(
     return "\n".join(parts)
 
 
-def load_exclude_findings(file_paths: List[str]) -> Set[Tuple[str, int, str]]:
+def load_exclude_findings(file_paths: List[str]) -> Set[Tuple[str, int]]:
     """Load findings from Stage 1/2 to exclude from Stage 3 review.
+
+    Uses ``(file, line)`` as the exclusion key because Stage 1/2 rule
+    identifiers (e.g. ``auto_non_lambda``) and Stage 3 categories
+    (e.g. ``convention``) use different taxonomies for the same issue.
+    Cross-rule dedup is handled later by
+    ``post_review.deduplicate_findings()`` which has access to both
+    stages' outputs.
 
     Args:
         file_paths: Paths to JSON finding files from earlier stages.
 
     Returns:
-        Set of (file, line, rule_id) tuples to exclude.
+        Set of (file, line) tuples to exclude.
     """
-    excluded: Set[Tuple[str, int, str]] = set()
+    excluded: Set[Tuple[str, int]] = set()
 
     for fp in file_paths:
         path = Path(fp)
@@ -231,12 +238,8 @@ def load_exclude_findings(file_paths: List[str]) -> Set[Tuple[str, int, str]]:
                     line = int(finding.get("line", 0))
                 except (TypeError, ValueError):
                     continue
-                # Match post_review.deduplicate_findings: use rule_id or category.
-                rule_id = finding.get("rule_id") or finding.get("category", "")
-                if not isinstance(rule_id, str):
-                    rule_id = str(rule_id)
                 if file and line > 0:
-                    excluded.add((file, line, rule_id))
+                    excluded.add((file, line))
         except (json.JSONDecodeError, OSError) as e:
             logger.warning("Failed to load exclude findings from %s: %s", fp, e)
 
@@ -245,16 +248,18 @@ def load_exclude_findings(file_paths: List[str]) -> Set[Tuple[str, int, str]]:
 
 def filter_excluded(
     findings: List[Dict[str, Any]],
-    excluded: Set[Tuple[str, int, str]],
+    excluded: Set[Tuple[str, int]],
 ) -> List[Dict[str, Any]]:
     """Remove findings that overlap with Stage 1/2 results.
 
-    Only excludes when *both* the location (file + line) and the rule
-    identifier match, so that a different rule on the same line is kept.
+    Uses ``(file, line)`` matching because Stage 1/2 and Stage 3 use
+    different rule taxonomies for the same underlying issue.  The
+    finer-grained ``(file, line, rule_id)`` dedup is performed later
+    by ``post_review.deduplicate_findings()``.
 
     Args:
         findings: Raw findings from LLM response.
-        excluded: Set of (file, line, rule_id) tuples from earlier stages.
+        excluded: Set of (file, line) tuples from earlier stages.
 
     Returns:
         Filtered list of findings.
@@ -266,8 +271,7 @@ def filter_excluded(
             line = int(f.get("line", 0))
         except (TypeError, ValueError):
             line = 0
-        rule_id = f.get("rule_id") or f.get("category", "")
-        if (file, line, rule_id) not in excluded:
+        if (file, line) not in excluded:
             result.append(f)
     return result
 

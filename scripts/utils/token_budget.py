@@ -225,8 +225,10 @@ def _split_by_lines(text: str, max_tokens: int) -> List[str]:
     returns 0 for very short lines) plus 1 token for the newline separator
     so that many short lines don't accumulate into an oversized chunk.
 
-    If a single line exceeds ``max_tokens``, it is further split by
-    characters so that no chunk exceeds the budget.
+    If a single line exceeds ``max_tokens``, it is emitted as its own
+    standalone chunk (slightly over budget) rather than character-split,
+    so that diff prefix semantics and hunk header line counting remain
+    correct.
     """
     lines = text.split("\n")
     chunks: List[str] = []
@@ -240,20 +242,13 @@ def _split_by_lines(text: str, max_tokens: int) -> List[str]:
             chunks.append("\n".join(current_lines))
             current_lines = []
             current_tokens = 0
-        # Single line exceeds budget — split by characters.
-        # Only the *first* fragment keeps the diff prefix (+/-/ ) so that
-        # downstream hunk-header rewriting counts it as one logical line,
-        # not N lines.  Continuation fragments are plain text.
+        # Single line exceeds budget — emit as standalone chunk to
+        # preserve the diff prefix (+/-/ ) for correct hunk header
+        # rewriting.  Character-splitting would strip the prefix from
+        # continuation fragments, causing _rewrite_hunk_header to
+        # miscount them as context lines.
         if line_tokens > max_tokens:
-            prefix = ""
-            content = line
-            if line and line[0] in ("+", "-", " "):
-                prefix = line[0]
-                content = line[1:]
-            chars_per_chunk = max(max_tokens * 3 - len(prefix), 1)
-            for idx, start in enumerate(range(0, len(content), chars_per_chunk)):
-                fragment = content[start : start + chars_per_chunk]
-                chunks.append(prefix + fragment if idx == 0 else fragment)
+            chunks.append(line)
             continue
         current_lines.append(line)
         current_tokens += line_tokens

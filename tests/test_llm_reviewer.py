@@ -496,8 +496,8 @@ class TestExcludeFindings:
         f.write_text(json.dumps(findings))
 
         excluded = load_exclude_findings([str(f)])
-        assert ("Source/A.cpp", 10, "logtemp") in excluded
-        assert ("Source/A.cpp", 20, "format") in excluded
+        assert ("Source/A.cpp", 10) in excluded
+        assert ("Source/A.cpp", 20) in excluded
 
     def test_load_missing_file(self):
         excluded = load_exclude_findings(["/nonexistent/file.json"])
@@ -510,8 +510,8 @@ class TestExcludeFindings:
         f2.write_text(json.dumps([{"file": "b.cpp", "line": 2, "rule_id": "r2"}]))
 
         excluded = load_exclude_findings([str(f1), str(f2)])
-        assert ("a.cpp", 1, "r1") in excluded
-        assert ("b.cpp", 2, "r2") in excluded
+        assert ("a.cpp", 1) in excluded
+        assert ("b.cpp", 2) in excluded
 
     def test_filter_excluded(self):
         findings = [
@@ -519,7 +519,7 @@ class TestExcludeFindings:
             {"file": "a.cpp", "line": 20, "rule_id": "r2", "message": "exclude"},
             {"file": "b.cpp", "line": 5, "rule_id": "r3", "message": "keep too"},
         ]
-        excluded = {("a.cpp", 20, "r2")}
+        excluded = {("a.cpp", 20)}
         result = filter_excluded(findings, excluded)
         assert len(result) == 2
         assert result[0]["message"] == "keep"
@@ -532,40 +532,32 @@ class TestExcludeFindings:
 
     def test_filter_all_excluded(self):
         findings = [{"file": "a.cpp", "line": 10, "rule_id": "r1"}]
-        excluded = {("a.cpp", 10, "r1")}
+        excluded = {("a.cpp", 10)}
         result = filter_excluded(findings, excluded)
         assert len(result) == 0
 
-    def test_different_rule_same_line_kept(self):
-        """Stage 3 finding with a different rule on the same line must survive."""
-        findings = [
-            {"file": "a.cpp", "line": 10, "category": "gc_safety", "message": "GC issue"},
-        ]
-        # Stage 1 flagged logtemp on the same line — different rule.
-        excluded = {("a.cpp", 10, "logtemp")}
-        result = filter_excluded(findings, excluded)
-        assert len(result) == 1
-        assert result[0]["category"] == "gc_safety"
+    def test_cross_stage_different_rule_same_line_excluded(self):
+        """Stage 1 auto_non_lambda + Stage 3 convention on same line: excluded.
 
-    def test_same_rule_same_line_excluded(self):
-        """Same rule on same line must still be excluded."""
+        Pre-filtering uses (file, line) to prevent cross-taxonomy
+        duplicates from consuming the 50-comment limit.
+        """
+        findings = [
+            {"file": "a.cpp", "line": 10, "category": "convention", "message": "Stage 3"},
+        ]
+        # Stage 1 used a different rule_id on the same line.
+        excluded = {("a.cpp", 10)}
+        result = filter_excluded(findings, excluded)
+        assert len(result) == 0
+
+    def test_same_line_excluded_regardless_of_rule(self):
+        """Any finding on an already-flagged line is excluded."""
         findings = [
             {"file": "a.cpp", "line": 10, "rule_id": "logtemp", "message": "dup"},
         ]
-        excluded = {("a.cpp", 10, "logtemp")}
+        excluded = {("a.cpp", 10)}
         result = filter_excluded(findings, excluded)
         assert len(result) == 0
-
-    def test_load_uses_category_fallback(self, tmp_path):
-        """Findings with category (no rule_id) should use category as key."""
-        data = [
-            {"file": "a.cpp", "line": 5, "category": "thread_safety"},
-        ]
-        f = tmp_path / "s3.json"
-        f.write_text(json.dumps(data))
-
-        excluded = load_exclude_findings([str(f)])
-        assert ("a.cpp", 5, "thread_safety") in excluded
 
 
 # ---------------------------------------------------------------------------
@@ -630,7 +622,7 @@ class TestReviewFile:
         # LLM returns findings on lines 12 and 13
         mock_api.return_value = (SAMPLE_LLM_RESPONSE, 500, 200)
 
-        excluded = {("Source/MyActor.cpp", 12, "convention")}
+        excluded = {("Source/MyActor.cpp", 12)}
         budget = BudgetTracker()
         findings = review_file(
             "Source/MyActor.cpp",
@@ -640,7 +632,7 @@ class TestReviewFile:
             budget,
         )
 
-        # Line 12 with rule "convention" should be excluded, only line 13 remains
+        # Line 12 should be excluded, only line 13 remains
         assert len(findings) == 1
         assert findings[0]["line"] == 13
 
@@ -768,10 +760,10 @@ class TestReviewPr:
         ])
         mock_api.return_value = (response, 500, 200)
 
-        # Create exclude file with same rule on line 12 — should be excluded.
+        # Create exclude file with line 12 — should be excluded by (file, line).
         exclude_file = tmp_path / "stage1.json"
         exclude_file.write_text(json.dumps([
-            {"file": "Source/MyActor.cpp", "line": 12, "rule_id": "conv"},
+            {"file": "Source/MyActor.cpp", "line": 12, "rule_id": "logtemp"},
         ]))
 
         findings, summary = review_pr(
@@ -779,7 +771,7 @@ class TestReviewPr:
             exclude_files=[str(exclude_file)],
         )
 
-        # Line 12 with same rule should be excluded
+        # Line 12 excluded by (file, line) match
         assert len(findings) == 1
         assert findings[0]["line"] == 99
 
@@ -954,7 +946,7 @@ class TestCLI:
 
         exclude_file = tmp_path / "stage1.json"
         exclude_file.write_text(json.dumps([
-            {"file": "Source/MyActor.cpp", "line": 12, "rule_id": "convention"},
+            {"file": "Source/MyActor.cpp", "line": 12, "rule_id": "logtemp"},
         ]))
 
         output_file = tmp_path / "findings-stage3.json"
@@ -968,7 +960,7 @@ class TestCLI:
 
         assert result == 0
         findings = json.loads(output_file.read_text())
-        # Line 12 with same rule excluded, only line 13 remains
+        # Line 12 excluded by (file, line), only line 13 remains
         assert len(findings) == 1
         assert findings[0]["line"] == 13
 
@@ -1445,7 +1437,7 @@ class TestValidateFindingFieldTypes:
         finding = {"file": ["a.cpp"], "line": 10, "message": "x", "category": "general"}
         result = validate_finding(finding, "b.cpp")
         # Must not raise unhashable type error
-        excluded = {("b.cpp", 10, "general")}
+        excluded = {("b.cpp", 10)}
         filtered = filter_excluded([result], excluded)
         assert len(filtered) == 0
 
@@ -1469,8 +1461,8 @@ class TestLoadExcludeFindingsNonDict:
         f = tmp_path / "exclude.json"
         f.write_text(json.dumps(data))
         result = load_exclude_findings([str(f)])
-        assert ("a.cpp", 10, "") in result
-        assert ("b.cpp", 20, "") in result
+        assert ("a.cpp", 10) in result
+        assert ("b.cpp", 20) in result
         assert len(result) == 2  # non-dict elements skipped
 
     def test_all_non_dict_elements(self, tmp_path):
@@ -1766,7 +1758,7 @@ class TestLoadExcludeFindingsFileType:
         f = tmp_path / "exclude.json"
         f.write_text(json.dumps(data))
         result = load_exclude_findings([str(f)])
-        assert ("b.cpp", 20, "") in result
+        assert ("b.cpp", 20) in result
         assert len(result) == 1
 
     def test_file_as_dict_skipped(self, tmp_path):
@@ -1937,33 +1929,31 @@ class TestReconstructFileDiffOldStart:
 # ---------------------------------------------------------------------------
 
 class TestSplitByLinesOversizedLine:
-    """Single lines exceeding max_tokens must be split by characters."""
+    """Oversized single lines are emitted as standalone chunks."""
 
-    def test_single_long_line_split(self):
-        from scripts.utils.token_budget import _split_by_lines, estimate_tokens
+    def test_single_long_line_standalone_chunk(self):
+        """A single long line becomes its own chunk (may exceed budget)."""
+        from scripts.utils.token_budget import _split_by_lines
 
-        # A single line of ~300 tokens (900 chars at 3 chars/token)
-        long_line = "x" * 900
-        assert estimate_tokens(long_line) == 300
-
+        long_line = "x" * 900  # ~300 tokens
         chunks = _split_by_lines(long_line, max_tokens=100)
-        assert len(chunks) > 1
-        for chunk in chunks:
-            assert estimate_tokens(chunk) <= 100
+        assert len(chunks) == 1
+        assert chunks[0] == long_line
 
     def test_long_line_among_short_lines(self):
-        from scripts.utils.token_budget import _split_by_lines, estimate_tokens
+        """Short lines before/after an oversized line are in separate chunks."""
+        from scripts.utils.token_budget import _split_by_lines
 
         lines = ["short"] * 5 + ["y" * 900] + ["short"] * 5
         text = "\n".join(lines)
 
         chunks = _split_by_lines(text, max_tokens=100)
-        # All chunks should be within budget
-        for chunk in chunks:
-            assert estimate_tokens(chunk) <= 100
-        # All content should be preserved
-        all_text = "".join(chunks)
-        assert "y" * 900 in all_text.replace("\n", "")
+        # The long line should be isolated in its own chunk.
+        assert any("y" * 900 == c for c in chunks)
+        # All content should be preserved.
+        all_text = "\n".join(chunks)
+        for line in lines:
+            assert line in all_text
 
     def test_no_empty_chunks(self):
         from scripts.utils.token_budget import _split_by_lines
@@ -1972,48 +1962,24 @@ class TestSplitByLinesOversizedLine:
         chunks = _split_by_lines(long_line, max_tokens=50)
         assert all(len(c) > 0 for c in chunks)
 
-    def test_diff_prefix_on_first_fragment_only(self):
-        """First fragment keeps +/- prefix; continuations are plain text
-        so downstream hunk-header rewriting counts one logical line."""
+    def test_diff_prefix_preserved_on_standalone(self):
+        """Oversized diff lines keep their prefix intact as standalone chunks."""
         from scripts.utils.token_budget import _split_by_lines
 
-        long_add_line = "+" + "a" * 900
-        chunks = _split_by_lines(long_add_line, max_tokens=100)
-        assert len(chunks) > 1
-        assert chunks[0].startswith("+"), "First fragment must keep '+' prefix"
-        for chunk in chunks[1:]:
-            assert not chunk.startswith("+"), (
-                f"Continuation should not have '+' prefix: {chunk[:20]!r}"
-            )
+        for prefix in ("+", "-", " "):
+            long_line = prefix + "a" * 900
+            chunks = _split_by_lines(long_line, max_tokens=100)
+            assert len(chunks) == 1
+            assert chunks[0] == long_line
+            assert chunks[0].startswith(prefix)
 
-    def test_diff_prefix_deletion_first_only(self):
+    def test_content_preserved(self):
+        """All content from an oversized line is preserved exactly."""
         from scripts.utils.token_budget import _split_by_lines
 
-        long_del_line = "-" + "d" * 900
-        chunks = _split_by_lines(long_del_line, max_tokens=100)
-        assert len(chunks) > 1
-        assert chunks[0].startswith("-")
-        for chunk in chunks[1:]:
-            assert not chunk.startswith("-")
-
-    def test_context_prefix_first_only(self):
-        from scripts.utils.token_budget import _split_by_lines
-
-        long_ctx_line = " " + "c" * 900
-        chunks = _split_by_lines(long_ctx_line, max_tokens=100)
-        assert len(chunks) > 1
-        assert chunks[0].startswith(" ")
-
-    def test_all_content_preserved_with_prefix(self):
-        """All content from a prefixed long line must be present across fragments."""
-        from scripts.utils.token_budget import _split_by_lines
-
-        content = "x" * 900
-        long_add_line = "+" + content
-        chunks = _split_by_lines(long_add_line, max_tokens=100)
-        # Reassemble: first chunk has prefix, rest are plain
-        reassembled = chunks[0][1:] + "".join(chunks[1:])
-        assert reassembled == content
+        content = "+" + "x" * 900
+        chunks = _split_by_lines(content, max_tokens=100)
+        assert "".join(chunks) == content
 
 
 # ---------------------------------------------------------------------------
@@ -2106,16 +2072,16 @@ class TestChunkDiffHunkHeaderRecalculation:
                 f"new_len mismatch: header says {claimed_new_len}, body has {actual_new}"
             )
 
-    def test_char_split_line_counts_as_one(self):
-        """A single long + line char-split into fragments must count as 1
-        logical addition, not N additions (over-increment bug)."""
+    def test_oversized_line_counts_as_one(self):
+        """A standalone oversized + line must count as 1 logical addition
+        in the rewritten @@ header, not be inflated."""
         import re
         from scripts.utils.token_budget import chunk_diff
 
         header = "--- a/f.cpp\n+++ b/f.cpp\n"
         # One short context line, one very long addition, one short addition.
         short_ctx = " ctx"
-        long_add = "+" + "x" * 3000  # ~1000 tokens, will be char-split
+        long_add = "+" + "x" * 3000  # ~1000 tokens, standalone chunk
         short_add = "+short"
         hunk = "@@ -1,1 +1,3 @@\n" + "\n".join([short_ctx, long_add, short_add])
         diff = header + hunk
@@ -2123,7 +2089,7 @@ class TestChunkDiffHunkHeaderRecalculation:
         chunks = chunk_diff(diff, max_tokens=400)
         assert len(chunks) > 1, "Expected the long line to force splitting"
 
-        # Collect all @@ headers and verify new_start doesn't jump wildly.
+        # Collect all @@ headers and verify new_len is correct.
         all_headers = []
         for chunk in chunks:
             for m in re.finditer(
@@ -2136,10 +2102,8 @@ class TestChunkDiffHunkHeaderRecalculation:
                 })
 
         # The total new_len across all sub-chunks should equal the original 3
-        # (1 context + 1 long add + 1 short add), not inflated by fragments.
+        # (1 context + 1 long add + 1 short add), not inflated.
         total_new = sum(h["new_len"] for h in all_headers)
-        # Allow context lines to be counted in both old and new.
-        # Original: 1 ctx + 2 additions = 3 new lines.
         assert total_new <= 5, (
             f"Total new_len {total_new} is inflated; headers: {all_headers}"
         )
