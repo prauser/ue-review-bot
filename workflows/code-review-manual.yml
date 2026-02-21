@@ -176,28 +176,26 @@ jobs:
 
       - name: Run Pattern Checker
         run: |
-          python -m scripts.stage1_pattern_checker \
+          PYTHONPATH=.review-bot python -m scripts.stage1_pattern_checker \
             --diff pr.diff \
             --checklist .review-bot/configs/checklist.yml \
             --output findings-stage1-pattern.json
-        working-directory: .review-bot
 
       - name: Run Format Checker
         run: |
           REVIEWABLE='${{ needs.gate.outputs.reviewable_files }}'
-          python -m scripts.stage1_format_diff \
+          PYTHONPATH=.review-bot python -m scripts.stage1_format_diff \
             --files "${REVIEWABLE}" \
             --clang-format-config .review-bot/configs/.clang-format \
-            --diff "${{ github.workspace }}/pr.diff" \
-            --output "${{ github.workspace }}/findings-stage1-format.json"
-        working-directory: .review-bot
+            --diff pr.diff \
+            --output findings-stage1-format.json
 
       - uses: actions/upload-artifact@v4
         with:
           name: findings-stage1
           path: |
             findings-stage1-pattern.json
-            .review-bot/findings-stage1-format.json
+            findings-stage1-format.json
           retention-days: 1
 
   # ===========================================================================
@@ -236,6 +234,8 @@ jobs:
                 --export-fixes=tidy-fixes-partial.yaml \
                 -p . 2>/dev/null || true
               if [ -f tidy-fixes-partial.yaml ]; then
+                # Append with YAML document separator for multi-doc merge
+                echo '---' >> tidy-fixes.yaml
                 cat tidy-fixes-partial.yaml >> tidy-fixes.yaml
                 rm tidy-fixes-partial.yaml
               fi
@@ -245,12 +245,11 @@ jobs:
 
       - name: Convert clang-tidy fixes
         run: |
-          python -m scripts.stage2_tidy_to_suggestions \
-            --tidy-fixes "${{ github.workspace }}/tidy-fixes.yaml" \
-            --stage1-results "${{ github.workspace }}/findings-stage1-pattern.json" \
-            --source-dir "${{ github.workspace }}" \
-            --output "${{ github.workspace }}/findings-stage2.json"
-        working-directory: .review-bot
+          PYTHONPATH=.review-bot python -m scripts.stage2_tidy_to_suggestions \
+            --tidy-fixes tidy-fixes.yaml \
+            --stage1-results findings-stage1-pattern.json \
+            --source-dir . \
+            --output findings-stage2.json
 
       - uses: actions/upload-artifact@v4
         with:
@@ -302,22 +301,16 @@ jobs:
           fi
           echo "args=${EXCLUDE_ARGS}" >> "$GITHUB_OUTPUT"
 
-      - name: Determine compile-commands flag
-        id: cc_flag
-        run: |
-          echo "value=${{ needs.gate.outputs.has_compile_commands }}" >> "$GITHUB_OUTPUT"
-
       - name: Run LLM Reviewer
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          python -m scripts.stage3_llm_reviewer \
-            --diff "${{ github.workspace }}/pr.diff" \
+          PYTHONPATH=.review-bot python -m scripts.stage3_llm_reviewer \
+            --diff pr.diff \
             ${{ steps.excludes.outputs.args }} \
-            --has-compile-commands ${{ steps.cc_flag.outputs.value }} \
-            --source-dir "${{ github.workspace }}" \
-            --output "${{ github.workspace }}/findings-stage3.json"
-        working-directory: .review-bot
+            --has-compile-commands ${{ needs.gate.outputs.has_compile_commands }} \
+            --source-dir . \
+            --output findings-stage3.json
 
       - uses: actions/upload-artifact@v4
         with:
@@ -370,9 +363,6 @@ jobs:
               FILES="${FILES} ${f}"
             fi
           done
-          if [ -f .review-bot/findings-stage1-format.json ]; then
-            FILES="${FILES} .review-bot/findings-stage1-format.json"
-          fi
           echo "list=${FILES}" >> "$GITHUB_OUTPUT"
 
       - name: Determine stages that ran
@@ -395,7 +385,7 @@ jobs:
           API_URL="${GHES_URL:+${GHES_URL}/api/v3}"
           API_URL="${API_URL:-https://api.github.com}"
 
-          python -m scripts.post_review \
+          PYTHONPATH=.review-bot python -m scripts.post_review \
             --findings ${{ steps.findings.outputs.list }} \
             --pr-number ${{ needs.preflight.outputs.pr_number }} \
             --repo ${{ github.repository }} \
@@ -404,7 +394,6 @@ jobs:
             --api-url "${API_URL}" \
             --stages "${{ steps.stages.outputs.list }}" \
             --output review-result.json
-        working-directory: .review-bot
 
       - name: Add completion reaction to /review comment
         if: always() && needs.preflight.outputs.comment_id != 'none'
