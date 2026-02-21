@@ -1,7 +1,7 @@
 # HANDOFF — UE5 코드리뷰 자동화 시스템 구현 진행상황
 
 > 세션 간 작업 인계를 위한 문서
-> 최종 업데이트: 2026-02-17
+> 최종 업데이트: 2026-02-18
 
 ---
 
@@ -15,6 +15,7 @@
 - ✅ **Step 3 완료** (Stage 1 — regex 패턴 매칭 + clang-format suggestion)
 - ✅ **Step 4 완료** (PR 코멘트 게시 — post_review + gh_api 확장)
 - ✅ **Step 5 완료** (Stage 2 — clang-tidy 정적 분석)
+- ✅ **Step 6 완료** (Stage 3 — LLM 시맨틱 리뷰)
 
 **전체 계획:** `PLAN.md` 참조
 
@@ -182,6 +183,80 @@ python -m scripts.stage1_format_diff \
 
 ---
 
+## ✅ 완료된 작업: Step 4
+
+### Step 4: PR 코멘트 게시 — post_review + gh_api 확장
+
+**상세 스펙:** `docs/steps/STEP4_POST_REVIEW.md`
+**브랜치:** `claude/step4-post-review-H20Qe`
+**상태:** 커밋/푸시 완료
+
+#### 생성/수정된 파일 (3개)
+
+| 파일 | 설명 |
+|------|------|
+| `scripts/post_review.py` | Stage 1~3 결과 통합 + 단일 PR Review 게시 |
+| `scripts/utils/gh_api.py` | 확장 — `GitHubClient`, `create_review()`, `get_existing_review_comments()` 추가 |
+| `tests/test_post_review.py` | 통합/게시 로직 테스트 (93개) |
+
+#### 주요 구현 사항
+
+**`scripts/post_review.py`:**
+- Stage 1 (패턴 + 포맷), Stage 2 (clang-tidy), Stage 3 (LLM) JSON 결과 통합
+- 파일 + 라인 기준 정렬, PR diff hunk 범위 검증 (범위 밖 코멘트 skip)
+- 중복 제거: 동일 file + line + rule_id → severity 우선순위 (error > warning > suggestion > info)
+- suggestion 블록 생성 (auto-fix 항목)
+- severity 아이콘: 🚫 error, ⚠️ warning, ℹ️ info
+- GHES 3.4+ multi-line 지원, 3.3 이하 fallback (코드 블록)
+- 최대 50개 코멘트 per review (GitHub API 제한), severity 기반 pruning
+- summary 테이블 (stage별/severity별 카운트)
+- dry-run 모드 지원 (API 호출 없이 payload 출력)
+- 기존 PR 코멘트 중복 방지 (paginated fetch)
+- 전체 실패 시 non-zero exit
+
+**`scripts/utils/gh_api.py` 확장:**
+- `GitHubClient` 클래스 — API 요청 핸들링 (token, base URL)
+- `create_review()` — PR Review 게시 (comments + body)
+- `get_pull_request()` — PR 메타데이터 조회
+- `get_existing_review_comments()` — 중복 방지용 기존 코멘트 조회 (페이지네이션)
+- `get_ghes_version()` — GHES 버전 감지 (multi-line 지원 판별)
+
+**CLI 인터페이스:**
+```bash
+python -m scripts.post_review \
+  --pr-number 42 \
+  --repo owner/repo \
+  --commit-sha abc123 \
+  --findings findings-stage1.json suggestions-format.json \
+  --token $GHES_TOKEN \
+  --api-url https://github.company.com/api/v3 \
+  --output review-result.json
+
+# Dry-run mode:
+python -m scripts.post_review \
+  --findings findings-stage1.json \
+  --dry-run \
+  --output review-payload.json
+```
+
+**출력 JSON:**
+```json
+{
+  "review_id": 12345,
+  "review_url": "https://...",
+  "total_findings": 15,
+  "posted_comments": 12,
+  "skipped_out_of_range": 2,
+  "skipped_duplicate": 1,
+  "by_stage": {"stage1-pattern": 5, "stage1-format": 3, "stage2": 2, "stage3": 2},
+  "by_severity": {"error": 2, "warning": 6, "info": 1, "suggestion": 3}
+}
+```
+
+**테스트 결과:** 93 passed (전체 278 passed, Step 2+3+5 포함)
+
+---
+
 ## ✅ 완료된 작업: Step 5
 
 ### Step 5: Stage 2 — clang-tidy 정적 분석
@@ -229,14 +304,78 @@ python -m scripts.stage2_tidy_to_suggestions \
   --output findings-stage2.json
 ```
 
-**테스트 결과:** 43 passed (전체 224 passed, Step 2+3 포함)
+**테스트 결과:** 43 passed (전체 367 passed, Step 2+3+4 포함)
 
 ---
 
-## 🔜 다음 작업: Step 6
+## ✅ 완료된 작업: Step 6
 
-### Step 6: Stage 3 — LLM 리뷰
+### Step 6: Stage 3 — LLM 시맨틱 리뷰
+
 **상세 스펙:** `docs/steps/STEP6_STAGE3.md`
+**브랜치:** `claude/fix-handoff-state-z27rd`
+**상태:** 커밋/푸시 완료
+
+#### 생성된 파일 (3개)
+
+| 파일 | 설명 |
+|------|------|
+| `scripts/utils/token_budget.py` | 토큰 예산 관리 (PR당 100K 토큰, 파일당 20K, $2 한도) |
+| `scripts/stage3_llm_reviewer.py` | Anthropic API 기반 시맨틱 코드 리뷰 |
+| `tests/test_llm_reviewer.py` | mock API 테스트 (81개) |
+
+#### 주요 구현 사항
+
+**`scripts/utils/token_budget.py`:**
+- `estimate_tokens()` — 보수적 토큰 추정 (len // 3)
+- `estimate_cost()` — USD 비용 추정 (Sonnet 4.5 기준)
+- `should_skip_file()` — ThirdParty, generated, protobuf, Intermediate 파일 스킵
+- `chunk_diff()` — @@ hunk 기준 분할, 초과 시 라인 단위 분할
+- `BudgetTracker` 클래스 — PR 세션 내 누적 토큰/비용 추적
+
+**`scripts/stage3_llm_reviewer.py`:**
+- `build_system_prompt()` — compile_commands.json 유무에 따라 clang-tidy 대체 섹션 동적 포함
+- `build_user_message()` — 파일별 diff + 선택적 전체 소스 컨텍스트
+- `parse_llm_response()` — markdown 코드 펜스 처리, JSON 배열 추출
+- `validate_finding()` — 필수 필드 정규화, stage3 태그 부여, rule_id = category
+- `load_exclude_findings()` / `filter_excluded()` — Stage 1/2 결과와 중복 제거
+- `call_anthropic_api()` — urllib 기반 API 호출, rate limit 429/5xx 재시도 (exponential backoff, 최대 3회)
+- `review_file()` — 파일 단위 리뷰, 예산 초과 시 skip, 청킹 지원
+- `review_pr()` — PR 전체 리뷰 (파일별 순회, 비C++ 스킵, generated 스킵)
+- `--dry-run` 모드 — API 호출 없이 시스템 프롬프트 확인
+
+**시스템 프롬프트 구성:**
+- Stage 1 이관 항목: auto 금지, 요다 컨디션, ! 연산자, sandwich inequality, FSimpleDelegateGraphTask, LOCTEXT_NAMESPACE, ConstructorHelpers
+- clang-tidy 대체 (compile_commands 없을 때): override, virtual destructor, 복사, else-after-return
+- LLM 검토 항목: GC 안전성, GameThread 안전성, 네트워크 효율, 성능, UE5 패턴, 설계, 주석, 보안
+
+**CLI 인터페이스:**
+```bash
+python -m scripts.stage3_llm_reviewer \
+  --diff pr.diff \
+  --exclude-findings findings-stage1.json findings-stage2.json \
+  --has-compile-commands false \
+  --output findings-stage3.json
+
+# Dry-run (시스템 프롬프트 확인):
+python -m scripts.stage3_llm_reviewer \
+  --diff pr.diff --dry-run
+```
+
+**에러 핸들링:**
+- API 타임아웃/에러: 해당 파일 skip, 파이프라인 계속
+- JSON 파싱 실패: skip, 로그 기록
+- Rate limit (429): exponential backoff 최대 3회
+- PR당 $2 초과: 남은 파일 skip, 경고
+
+**테스트 결과:** 81 passed (전체 448 passed, Step 2+3+4+5 포함)
+
+---
+
+## 🔜 다음 작업: Step 7
+
+### Step 7: GitHub Actions 워크플로우 + 문서화
+**상세 스펙:** `docs/steps/STEP7_WORKFLOWS.md`
 
 ---
 
@@ -252,24 +391,27 @@ ue5-review-bot/
 │   ├── .editorconfig
 │   ├── checklist.yml            # (Step 3에서 regex 버그 수정)
 │   └── gate_config.yml
-├── scripts/                     # ✅ Step 2 + Step 3 + Step 4 + Step 5 완료
+├── scripts/                     # ✅ Step 2 + Step 3 + Step 4 + Step 5 + Step 6 완료
 │   ├── __init__.py
 │   ├── gate_checker.py          # Gate 로직 (대규모 PR 판정)
 │   ├── stage1_pattern_checker.py # ✅ Stage 1 regex 패턴 검사
 │   ├── stage1_format_diff.py    # ✅ clang-format suggestion 생성
 │   ├── stage2_tidy_to_suggestions.py # ✅ Stage 2 clang-tidy 변환
+│   ├── stage3_llm_reviewer.py   # ✅ Stage 3 LLM 시맨틱 리뷰
 │   ├── post_review.py           # ✅ PR Review 게시 (findings 통합)
 │   └── utils/
 │       ├── __init__.py
 │       ├── diff_parser.py       # ✅ unified diff 파싱 유틸
-│       └── gh_api.py            # GitHub API 유틸리티
-├── tests/                       # ✅ Step 2 + Step 3 + Step 4 + Step 5 완료
+│       ├── gh_api.py            # GitHub API 유틸리티
+│       └── token_budget.py      # ✅ 토큰 예산 관리
+├── tests/                       # ✅ Step 2 + Step 3 + Step 4 + Step 5 + Step 6 완료
 │   ├── __init__.py
 │   ├── test_gate_checker.py     # Gate Checker 테스트 (50개)
 │   ├── test_pattern_checker.py  # ✅ 패턴 검사 테스트 (71개)
 │   ├── test_format_diff.py      # ✅ 포맷 suggestion 테스트 (21개)
 │   ├── test_stage2.py           # ✅ Stage 2 변환 테스트 (43개)
-│   ├── test_post_review.py      # ✅ PR Review 게시 테스트 (58개)
+│   ├── test_post_review.py      # ✅ PR Review 게시 테스트 (93개)
+│   ├── test_llm_reviewer.py     # ✅ Stage 3 LLM 리뷰 테스트 (81개)
 │   └── fixtures/
 │       ├── sample_bad.cpp       # 규칙 위반 샘플
 │       ├── sample_good.cpp      # 규칙 준수 샘플 (Step 3에서 수정)
@@ -280,8 +422,9 @@ ue5-review-bot/
         ├── STEP1_CONFIGS.md     # ✅ 완료
         ├── STEP2_GATE.md        # ✅ 완료
         ├── STEP3_STAGE1.md      # ✅ 완료
-        ├── STEP5_STAGE2.md      # 🔜 다음
-        ├── STEP6_STAGE3.md
+        ├── STEP4_POST_REVIEW.md # ✅ 완료
+        ├── STEP5_STAGE2.md      # ✅ 완료
+        ├── STEP6_STAGE3.md      # ✅ 완료
         └── STEP7_WORKFLOWS.md
 ```
 
@@ -338,9 +481,7 @@ Stage 3 (LLM 리뷰)     → Stage 1 이관 항목 포함, 의미론적 리뷰 �
 
 2. **다음 Step 스펙 읽기:**
    ```bash
-   cat docs/steps/STEP4_POST_REVIEW.md   # PR 코멘트 게시
-   # 또는
-   cat docs/steps/STEP6_STAGE3.md        # LLM 리뷰
+   cat docs/steps/STEP7_WORKFLOWS.md     # GitHub Actions 워크플로우
    ```
 
 3. **새 브랜치 생성:**
@@ -359,7 +500,7 @@ Stage 3 (LLM 리뷰)     → Stage 1 이관 항목 포함, 의미론적 리뷰 �
 
 - PDF 파일 (`CodeReviewCheckList.pdf`, `CodingConvention.pdf`)은 main 브랜치의 `docs/` 디렉토리에 보관
 - 현재 환경에서는 PDF 파싱 도구 설치 불가 → STEP1_CONFIGS.md 스펙 기반으로 작성 완료
-- `.clang-tidy` 설정은 Step 5에서 생성 (compile_commands.json과 함께)
+- `.clang-tidy` 설정은 Step 5에서 생성 완료 (9개 체크 설정)
 - `checklist.yml`의 tier 분류가 각 Stage 스크립트 구현의 기준이 됨
 - Stage 1 regex는 주석 라인을 자동 스킵하여 false positive 감소
 - `check_side_effect_suspicious`는 1차 필터 (Stage 3 LLM이 최종 검증)
