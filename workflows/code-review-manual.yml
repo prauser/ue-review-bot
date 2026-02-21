@@ -1,0 +1,420 @@
+# UE5 Code Review Bot — Manual Trigger
+# Triggered via workflow_dispatch or /review comment on a PR
+# Copy this file to your game repo: .github/workflows/code-review-manual.yml
+
+name: "UE5 Code Review (Manual)"
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: "Pull Request number to review"
+        required: true
+        type: number
+
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: code-review-manual-${{ github.event.inputs.pr_number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  # ===========================================================================
+  # Preflight — Validate trigger and resolve PR info
+  # ===========================================================================
+  preflight:
+    name: Preflight
+    runs-on: [self-hosted, ue5-review]
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'issue_comment' &&
+       github.event.issue.pull_request &&
+       contains(github.event.comment.body, '/review'))
+    outputs:
+      pr_number: ${{ steps.resolve.outputs.pr_number }}
+      head_sha: ${{ steps.resolve.outputs.head_sha }}
+      base_sha: ${{ steps.resolve.outputs.base_sha }}
+      comment_id: ${{ steps.resolve.outputs.comment_id }}
+    steps:
+      - name: Add reaction to /review comment
+        if: github.event_name == 'issue_comment'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GHES_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: context.payload.comment.id,
+              content: 'eyes'
+            });
+
+      - name: Resolve PR info
+        id: resolve
+        env:
+          GH_TOKEN: ${{ secrets.GHES_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            PR_NUMBER="${{ github.event.inputs.pr_number }}"
+          else
+            PR_NUMBER="${{ github.event.issue.number }}"
+          fi
+          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+
+          # Fetch PR metadata
+          PR_JSON=$(gh api repos/${{ github.repository }}/pulls/${PR_NUMBER})
+          HEAD_SHA=$(echo "${PR_JSON}" | jq -r '.head.sha')
+          BASE_SHA=$(echo "${PR_JSON}" | jq -r '.base.sha')
+          echo "head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
+          echo "base_sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
+
+          COMMENT_ID="${{ github.event.comment.id }}"
+          echo "comment_id=${COMMENT_ID:-none}" >> "$GITHUB_OUTPUT"
+
+  # ===========================================================================
+  # Gate — Large PR detection + file filtering
+  # ===========================================================================
+  gate:
+    name: Gate Check
+    needs: preflight
+    runs-on: [self-hosted, ue5-review]
+    outputs:
+      is_large_pr: ${{ steps.gate.outputs.is_large_pr }}
+      reviewable_files: ${{ steps.gate.outputs.reviewable_files }}
+      has_compile_commands: ${{ steps.check_cc.outputs.exists }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head_sha }}
+          lfs: false
+          fetch-depth: 0
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/ue5-review-bot
+          ref: main
+          path: .review-bot
+          token: ${{ secrets.BOT_REPO_TOKEN }}
+
+      - name: Generate PR diff
+        run: |
+          git diff ${{ needs.preflight.outputs.base_sha }}..${{ needs.preflight.outputs.head_sha }} > pr.diff
+
+      - name: Collect PR labels
+        id: labels
+        env:
+          GH_TOKEN: ${{ secrets.GHES_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          LABELS=$(gh api repos/${{ github.repository }}/pulls/${{ needs.preflight.outputs.pr_number }} | jq -r '[.labels[].name] | join(",")')
+          echo "list=${LABELS}" >> "$GITHUB_OUTPUT"
+
+      - name: Run Gate Checker
+        id: gate
+        run: |
+          python .review-bot/scripts/gate_checker.py \
+            --diff pr.diff \
+            --config .review-bot/configs/gate_config.yml \
+            --labels "${{ steps.labels.outputs.list }}" \
+            --output gate-result.json
+
+          IS_LARGE=$(jq -r '.is_large_pr' gate-result.json)
+          REVIEWABLE=$(jq -c '.reviewable_files' gate-result.json)
+          echo "is_large_pr=${IS_LARGE}" >> "$GITHUB_OUTPUT"
+          echo "reviewable_files=${REVIEWABLE}" >> "$GITHUB_OUTPUT"
+
+      - name: Check compile_commands.json
+        id: check_cc
+        run: |
+          if [ -f compile_commands.json ] || [ -f build/compile_commands.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pr-diff
+          path: pr.diff
+          retention-days: 1
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gate-result
+          path: gate-result.json
+          retention-days: 1
+
+  # ===========================================================================
+  # Stage 1 — Regex pattern matching + clang-format suggestions
+  # ===========================================================================
+  stage1:
+    name: "Stage 1: Pattern + Format"
+    needs: [preflight, gate]
+    runs-on: [self-hosted, ue5-review]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head_sha }}
+          lfs: false
+          fetch-depth: 2
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/ue5-review-bot
+          ref: main
+          path: .review-bot
+          token: ${{ secrets.BOT_REPO_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr-diff
+
+      - name: Run Pattern Checker
+        run: |
+          python -m scripts.stage1_pattern_checker \
+            --diff pr.diff \
+            --checklist .review-bot/configs/checklist.yml \
+            --output findings-stage1-pattern.json
+        working-directory: .review-bot
+
+      - name: Run Format Checker
+        run: |
+          REVIEWABLE='${{ needs.gate.outputs.reviewable_files }}'
+          python -m scripts.stage1_format_diff \
+            --files "${REVIEWABLE}" \
+            --clang-format-config .review-bot/configs/.clang-format \
+            --diff "${{ github.workspace }}/pr.diff" \
+            --output "${{ github.workspace }}/findings-stage1-format.json"
+        working-directory: .review-bot
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: findings-stage1
+          path: |
+            findings-stage1-pattern.json
+            .review-bot/findings-stage1-format.json
+          retention-days: 1
+
+  # ===========================================================================
+  # Stage 2 — clang-tidy (manual: runs even for large PRs)
+  # ===========================================================================
+  stage2:
+    name: "Stage 2: clang-tidy"
+    needs: [preflight, gate, stage1]
+    if: needs.gate.outputs.has_compile_commands == 'true'
+    runs-on: [self-hosted, ue5-review]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head_sha }}
+          lfs: false
+          fetch-depth: 2
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/ue5-review-bot
+          ref: main
+          path: .review-bot
+          token: ${{ secrets.BOT_REPO_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: findings-stage1
+
+      - name: Run clang-tidy
+        run: |
+          REVIEWABLE='${{ needs.gate.outputs.reviewable_files }}'
+          echo "${REVIEWABLE}" | jq -r '.[]' | while read -r f; do
+            if [ -f "$f" ]; then
+              clang-tidy "$f" \
+                --config-file=.review-bot/configs/.clang-tidy \
+                --export-fixes=tidy-fixes-partial.yaml \
+                -p . 2>/dev/null || true
+              if [ -f tidy-fixes-partial.yaml ]; then
+                cat tidy-fixes-partial.yaml >> tidy-fixes.yaml
+                rm tidy-fixes-partial.yaml
+              fi
+            fi
+          done
+          touch tidy-fixes.yaml
+
+      - name: Convert clang-tidy fixes
+        run: |
+          python -m scripts.stage2_tidy_to_suggestions \
+            --tidy-fixes "${{ github.workspace }}/tidy-fixes.yaml" \
+            --stage1-results "${{ github.workspace }}/findings-stage1-pattern.json" \
+            --source-dir "${{ github.workspace }}" \
+            --output "${{ github.workspace }}/findings-stage2.json"
+        working-directory: .review-bot
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: findings-stage2
+          path: findings-stage2.json
+          retention-days: 1
+
+  # ===========================================================================
+  # Stage 3 — LLM semantic review (blocked for large PRs even on manual)
+  # ===========================================================================
+  stage3:
+    name: "Stage 3: LLM Review"
+    needs: [preflight, gate, stage1, stage2]
+    if: always() && needs.gate.outputs.is_large_pr == 'false' && needs.stage1.result == 'success'
+    runs-on: [self-hosted, ue5-review]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head_sha }}
+          lfs: false
+          fetch-depth: 2
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/ue5-review-bot
+          ref: main
+          path: .review-bot
+          token: ${{ secrets.BOT_REPO_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: pr-diff
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: findings-stage1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: findings-stage2
+          continue-on-error: true
+
+      - name: Prepare exclude findings
+        id: excludes
+        run: |
+          EXCLUDE_ARGS="--exclude-findings findings-stage1-pattern.json"
+          if [ -f findings-stage2.json ]; then
+            EXCLUDE_ARGS="${EXCLUDE_ARGS} findings-stage2.json"
+          fi
+          echo "args=${EXCLUDE_ARGS}" >> "$GITHUB_OUTPUT"
+
+      - name: Determine compile-commands flag
+        id: cc_flag
+        run: |
+          echo "value=${{ needs.gate.outputs.has_compile_commands }}" >> "$GITHUB_OUTPUT"
+
+      - name: Run LLM Reviewer
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          python -m scripts.stage3_llm_reviewer \
+            --diff "${{ github.workspace }}/pr.diff" \
+            ${{ steps.excludes.outputs.args }} \
+            --has-compile-commands ${{ steps.cc_flag.outputs.value }} \
+            --source-dir "${{ github.workspace }}" \
+            --output "${{ github.workspace }}/findings-stage3.json"
+        working-directory: .review-bot
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: findings-stage3
+          path: findings-stage3.json
+          retention-days: 1
+
+  # ===========================================================================
+  # Post Review — Merge all findings and publish PR review
+  # ===========================================================================
+  post-review:
+    name: Post Review
+    needs: [preflight, gate, stage1, stage2, stage3]
+    if: always() && needs.stage1.result == 'success'
+    runs-on: [self-hosted, ue5-review]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.preflight.outputs.head_sha }}
+          lfs: false
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/ue5-review-bot
+          ref: main
+          path: .review-bot
+          token: ${{ secrets.BOT_REPO_TOKEN }}
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: findings-stage1
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: findings-stage2
+          continue-on-error: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: findings-stage3
+          continue-on-error: true
+
+      - name: Collect finding files
+        id: findings
+        run: |
+          FILES=""
+          for f in findings-stage1-pattern.json findings-stage1-format.json findings-stage2.json findings-stage3.json; do
+            if [ -f "$f" ]; then
+              FILES="${FILES} ${f}"
+            fi
+          done
+          if [ -f .review-bot/findings-stage1-format.json ]; then
+            FILES="${FILES} .review-bot/findings-stage1-format.json"
+          fi
+          echo "list=${FILES}" >> "$GITHUB_OUTPUT"
+
+      - name: Determine stages that ran
+        id: stages
+        run: |
+          STAGES="stage1"
+          if [ -f findings-stage2.json ]; then
+            STAGES="${STAGES},stage2"
+          fi
+          if [ -f findings-stage3.json ]; then
+            STAGES="${STAGES},stage3"
+          fi
+          echo "list=${STAGES}" >> "$GITHUB_OUTPUT"
+
+      - name: Post PR Review
+        env:
+          GHES_TOKEN: ${{ secrets.GHES_TOKEN }}
+          GHES_URL: ${{ secrets.GHES_URL }}
+        run: |
+          API_URL="${GHES_URL:+${GHES_URL}/api/v3}"
+          API_URL="${API_URL:-https://api.github.com}"
+
+          python -m scripts.post_review \
+            --findings ${{ steps.findings.outputs.list }} \
+            --pr-number ${{ needs.preflight.outputs.pr_number }} \
+            --repo ${{ github.repository }} \
+            --commit-sha ${{ needs.preflight.outputs.head_sha }} \
+            --token "${GHES_TOKEN}" \
+            --api-url "${API_URL}" \
+            --stages "${{ steps.stages.outputs.list }}" \
+            --output review-result.json
+        working-directory: .review-bot
+
+      - name: Add completion reaction to /review comment
+        if: always() && needs.preflight.outputs.comment_id != 'none'
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GHES_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            await github.rest.reactions.createForIssueComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: ${{ needs.preflight.outputs.comment_id }},
+              content: '${{ job.status == 'success' && '+1' || '-1' }}'
+            });
