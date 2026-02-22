@@ -112,7 +112,7 @@ jobs:
 
       - name: Generate PR diff
         run: |
-          git diff ${{ needs.preflight.outputs.base_sha }}..${{ needs.preflight.outputs.head_sha }} > pr.diff
+          git diff ${{ needs.preflight.outputs.base_sha }}...${{ needs.preflight.outputs.head_sha }} > pr.diff
 
       - name: Collect PR labels
         id: labels
@@ -407,13 +407,22 @@ jobs:
             --output "${GITHUB_WORKSPACE}/review-result.json"
         working-directory: .review-bot
 
+  # ===========================================================================
+  # Finalizer — Always add completion reaction to /review comment
+  # ===========================================================================
+  finalizer:
+    name: Finalizer
+    needs: [preflight, gate, stage1, stage2, stage3, post-review]
+    if: always() && needs.preflight.result == 'success' && needs.preflight.outputs.comment_id != 'none'
+    runs-on: [self-hosted, ue5-review]
+    steps:
       - name: Add completion reaction to /review comment
-        if: always() && needs.preflight.outputs.comment_id != 'none'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GHES_TOKEN || secrets.GITHUB_TOKEN }}
           script: |
-            const content = '${{ job.status }}' === 'success' ? '+1' : '-1';
+            const postReview = '${{ needs.post-review.result }}';
+            const content = postReview === 'success' ? '+1' : '-1';
             await github.rest.reactions.createForIssueComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
