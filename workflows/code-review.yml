@@ -27,6 +27,7 @@ jobs:
       is_large_pr: ${{ steps.gate.outputs.is_large_pr }}
       reviewable_files: ${{ steps.gate.outputs.reviewable_files }}
       has_compile_commands: ${{ steps.check_cc.outputs.exists }}
+      compile_commands_dir: ${{ steps.check_cc.outputs.build_dir }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -67,10 +68,15 @@ jobs:
       - name: Check compile_commands.json
         id: check_cc
         run: |
-          if [ -f compile_commands.json ] || [ -f build/compile_commands.json ]; then
+          if [ -f compile_commands.json ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "build_dir=." >> "$GITHUB_OUTPUT"
+          elif [ -f build/compile_commands.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "build_dir=build" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "build_dir=." >> "$GITHUB_OUTPUT"
           fi
 
       - uses: actions/upload-artifact@v4
@@ -160,13 +166,14 @@ jobs:
 
       - name: Run clang-tidy
         run: |
+          BUILD_DIR="${{ needs.gate.outputs.compile_commands_dir }}"
           REVIEWABLE='${{ needs.gate.outputs.reviewable_files }}'
           echo "${REVIEWABLE}" | jq -r '.[]' | while read -r f; do
             if [ -f "$f" ]; then
               clang-tidy "$f" \
                 --config-file=.review-bot/configs/.clang-tidy \
                 --export-fixes=tidy-fixes-partial.yaml \
-                -p . 2>/dev/null || true
+                -p "${BUILD_DIR}" 2>/dev/null || true
               if [ -f tidy-fixes-partial.yaml ]; then
                 # Append with YAML document separator for multi-doc merge
                 echo '---' >> tidy-fixes.yaml
@@ -224,7 +231,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: findings-stage2
-          continue-on-error: true
+        continue-on-error: true
 
       - name: Prepare exclude findings
         id: excludes
@@ -280,12 +287,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: findings-stage2
-          continue-on-error: true
+        continue-on-error: true
 
       - uses: actions/download-artifact@v4
         with:
           name: findings-stage3
-          continue-on-error: true
+        continue-on-error: true
 
       - name: Collect finding files
         id: findings

@@ -57,25 +57,31 @@ jobs:
 
       - name: Resolve PR info
         id: resolve
-        env:
-          GH_TOKEN: ${{ secrets.GHES_TOKEN || secrets.GITHUB_TOKEN }}
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            PR_NUMBER="${{ github.event.inputs.pr_number }}"
-          else
-            PR_NUMBER="${{ github.event.issue.number }}"
-          fi
-          echo "pr_number=${PR_NUMBER}" >> "$GITHUB_OUTPUT"
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GHES_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            let prNumber;
+            if (context.eventName === 'workflow_dispatch') {
+              prNumber = context.payload.inputs.pr_number;
+            } else {
+              prNumber = context.issue.number;
+            }
 
-          # Fetch PR metadata
-          PR_JSON=$(gh api repos/${{ github.repository }}/pulls/${PR_NUMBER})
-          HEAD_SHA=$(echo "${PR_JSON}" | jq -r '.head.sha')
-          BASE_SHA=$(echo "${PR_JSON}" | jq -r '.base.sha')
-          echo "head_sha=${HEAD_SHA}" >> "$GITHUB_OUTPUT"
-          echo "base_sha=${BASE_SHA}" >> "$GITHUB_OUTPUT"
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: prNumber,
+            });
 
-          COMMENT_ID="${{ github.event.comment.id }}"
-          echo "comment_id=${COMMENT_ID:-none}" >> "$GITHUB_OUTPUT"
+            core.setOutput('pr_number', String(prNumber));
+            core.setOutput('head_sha', pr.head.sha);
+            core.setOutput('base_sha', pr.base.sha);
+
+            const commentId = context.payload.comment
+              ? String(context.payload.comment.id)
+              : 'none';
+            core.setOutput('comment_id', commentId);
 
   # ===========================================================================
   # Gate — Large PR detection + file filtering
@@ -88,6 +94,7 @@ jobs:
       is_large_pr: ${{ steps.gate.outputs.is_large_pr }}
       reviewable_files: ${{ steps.gate.outputs.reviewable_files }}
       has_compile_commands: ${{ steps.check_cc.outputs.exists }}
+      compile_commands_dir: ${{ steps.check_cc.outputs.build_dir }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -108,11 +115,17 @@ jobs:
 
       - name: Collect PR labels
         id: labels
-        env:
-          GH_TOKEN: ${{ secrets.GHES_TOKEN || secrets.GITHUB_TOKEN }}
-        run: |
-          LABELS=$(gh api repos/${{ github.repository }}/pulls/${{ needs.preflight.outputs.pr_number }} | jq -r '[.labels[].name] | join(",")')
-          echo "list=${LABELS}" >> "$GITHUB_OUTPUT"
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GHES_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: ${{ needs.preflight.outputs.pr_number }},
+            });
+            const labels = pr.labels.map(l => l.name).join(',');
+            core.setOutput('list', labels);
 
       - name: Run Gate Checker
         id: gate
@@ -131,10 +144,15 @@ jobs:
       - name: Check compile_commands.json
         id: check_cc
         run: |
-          if [ -f compile_commands.json ] || [ -f build/compile_commands.json ]; then
+          if [ -f compile_commands.json ]; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "build_dir=." >> "$GITHUB_OUTPUT"
+          elif [ -f build/compile_commands.json ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "build_dir=build" >> "$GITHUB_OUTPUT"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "build_dir=." >> "$GITHUB_OUTPUT"
           fi
 
       - uses: actions/upload-artifact@v4
@@ -226,13 +244,14 @@ jobs:
 
       - name: Run clang-tidy
         run: |
+          BUILD_DIR="${{ needs.gate.outputs.compile_commands_dir }}"
           REVIEWABLE='${{ needs.gate.outputs.reviewable_files }}'
           echo "${REVIEWABLE}" | jq -r '.[]' | while read -r f; do
             if [ -f "$f" ]; then
               clang-tidy "$f" \
                 --config-file=.review-bot/configs/.clang-tidy \
                 --export-fixes=tidy-fixes-partial.yaml \
-                -p . 2>/dev/null || true
+                -p "${BUILD_DIR}" 2>/dev/null || true
               if [ -f tidy-fixes-partial.yaml ]; then
                 # Append with YAML document separator for multi-doc merge
                 echo '---' >> tidy-fixes.yaml
@@ -290,7 +309,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: findings-stage2
-          continue-on-error: true
+        continue-on-error: true
 
       - name: Prepare exclude findings
         id: excludes
@@ -347,12 +366,12 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: findings-stage2
-          continue-on-error: true
+        continue-on-error: true
 
       - uses: actions/download-artifact@v4
         with:
           name: findings-stage3
-          continue-on-error: true
+        continue-on-error: true
 
       - name: Collect finding files
         id: findings
@@ -401,9 +420,10 @@ jobs:
         with:
           github-token: ${{ secrets.GHES_TOKEN || secrets.GITHUB_TOKEN }}
           script: |
+            const content = '${{ job.status }}' === 'success' ? '+1' : '-1';
             await github.rest.reactions.createForIssueComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               comment_id: ${{ needs.preflight.outputs.comment_id }},
-              content: '${{ job.status == 'success' && '+1' || '-1' }}'
+              content: content
             });
