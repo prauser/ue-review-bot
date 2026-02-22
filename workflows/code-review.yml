@@ -126,12 +126,11 @@ jobs:
       - name: Run Format Checker
         run: |
           REVIEWABLE='${{ needs.gate.outputs.reviewable_files }}'
-          python -m scripts.stage1_format_diff \
+          python .review-bot/scripts/stage1_format_diff.py \
             --files "${REVIEWABLE}" \
-            --clang-format-config configs/.clang-format \
+            --clang-format-config .review-bot/configs/.clang-format \
             --diff "${GITHUB_WORKSPACE}/pr.diff" \
             --output "${GITHUB_WORKSPACE}/findings-stage1-format.json"
-        working-directory: .review-bot
 
       - uses: actions/upload-artifact@v4
         with:
