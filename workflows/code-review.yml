@@ -117,19 +117,21 @@ jobs:
 
       - name: Run Pattern Checker
         run: |
-          PYTHONPATH=.review-bot python -m scripts.stage1_pattern_checker \
-            --diff pr.diff \
-            --checklist .review-bot/configs/checklist.yml \
-            --output findings-stage1-pattern.json
+          python -m scripts.stage1_pattern_checker \
+            --diff "${GITHUB_WORKSPACE}/pr.diff" \
+            --checklist configs/checklist.yml \
+            --output "${GITHUB_WORKSPACE}/findings-stage1-pattern.json"
+        working-directory: .review-bot
 
       - name: Run Format Checker
         run: |
           REVIEWABLE='${{ needs.gate.outputs.reviewable_files }}'
-          PYTHONPATH=.review-bot python -m scripts.stage1_format_diff \
+          python -m scripts.stage1_format_diff \
             --files "${REVIEWABLE}" \
-            --clang-format-config .review-bot/configs/.clang-format \
-            --diff pr.diff \
-            --output findings-stage1-format.json
+            --clang-format-config configs/.clang-format \
+            --diff "${GITHUB_WORKSPACE}/pr.diff" \
+            --output "${GITHUB_WORKSPACE}/findings-stage1-format.json"
+        working-directory: .review-bot
 
       - uses: actions/upload-artifact@v4
         with:
@@ -187,11 +189,12 @@ jobs:
 
       - name: Convert clang-tidy fixes
         run: |
-          PYTHONPATH=.review-bot python -m scripts.stage2_tidy_to_suggestions \
-            --tidy-fixes tidy-fixes.yaml \
-            --stage1-results findings-stage1-pattern.json \
-            --source-dir . \
-            --output findings-stage2.json
+          python -m scripts.stage2_tidy_to_suggestions \
+            --tidy-fixes "${GITHUB_WORKSPACE}/tidy-fixes.yaml" \
+            --stage1-results "${GITHUB_WORKSPACE}/findings-stage1-pattern.json" \
+            --source-dir "${GITHUB_WORKSPACE}" \
+            --output "${GITHUB_WORKSPACE}/findings-stage2.json"
+        working-directory: .review-bot
 
       - uses: actions/upload-artifact@v4
         with:
@@ -233,25 +236,21 @@ jobs:
           name: findings-stage2
         continue-on-error: true
 
-      - name: Prepare exclude findings
-        id: excludes
-        run: |
-          EXCLUDE_ARGS="--exclude-findings findings-stage1-pattern.json"
-          if [ -f findings-stage2.json ]; then
-            EXCLUDE_ARGS="${EXCLUDE_ARGS} findings-stage2.json"
-          fi
-          echo "args=${EXCLUDE_ARGS}" >> "$GITHUB_OUTPUT"
-
       - name: Run LLM Reviewer
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          PYTHONPATH=.review-bot python -m scripts.stage3_llm_reviewer \
-            --diff pr.diff \
-            ${{ steps.excludes.outputs.args }} \
+          EXCLUDE_ARGS="--exclude-findings ${GITHUB_WORKSPACE}/findings-stage1-pattern.json"
+          if [ -f "${GITHUB_WORKSPACE}/findings-stage2.json" ]; then
+            EXCLUDE_ARGS="${EXCLUDE_ARGS} ${GITHUB_WORKSPACE}/findings-stage2.json"
+          fi
+          python -m scripts.stage3_llm_reviewer \
+            --diff "${GITHUB_WORKSPACE}/pr.diff" \
+            ${EXCLUDE_ARGS} \
             --has-compile-commands ${{ needs.gate.outputs.has_compile_commands }} \
-            --source-dir . \
-            --output findings-stage3.json
+            --source-dir "${GITHUB_WORKSPACE}" \
+            --output "${GITHUB_WORKSPACE}/findings-stage3.json"
+        working-directory: .review-bot
 
       - uses: actions/upload-artifact@v4
         with:
@@ -294,29 +293,6 @@ jobs:
           name: findings-stage3
         continue-on-error: true
 
-      - name: Collect finding files
-        id: findings
-        run: |
-          FILES=""
-          for f in findings-stage1-pattern.json findings-stage1-format.json findings-stage2.json findings-stage3.json; do
-            if [ -f "$f" ]; then
-              FILES="${FILES} ${f}"
-            fi
-          done
-          echo "list=${FILES}" >> "$GITHUB_OUTPUT"
-
-      - name: Determine stages that ran
-        id: stages
-        run: |
-          STAGES="stage1"
-          if [ -f findings-stage2.json ]; then
-            STAGES="${STAGES},stage2"
-          fi
-          if [ -f findings-stage3.json ]; then
-            STAGES="${STAGES},stage3"
-          fi
-          echo "list=${STAGES}" >> "$GITHUB_OUTPUT"
-
       - name: Post PR Review
         env:
           GHES_TOKEN: ${{ secrets.GHES_TOKEN }}
@@ -325,12 +301,28 @@ jobs:
           API_URL="${GHES_URL:+${GHES_URL}/api/v3}"
           API_URL="${API_URL:-https://api.github.com}"
 
-          PYTHONPATH=.review-bot python -m scripts.post_review \
-            --findings ${{ steps.findings.outputs.list }} \
+          FILES=""
+          for f in findings-stage1-pattern.json findings-stage1-format.json findings-stage2.json findings-stage3.json; do
+            if [ -f "${GITHUB_WORKSPACE}/${f}" ]; then
+              FILES="${FILES} ${GITHUB_WORKSPACE}/${f}"
+            fi
+          done
+
+          STAGES="stage1"
+          if [ -f "${GITHUB_WORKSPACE}/findings-stage2.json" ]; then
+            STAGES="${STAGES},stage2"
+          fi
+          if [ -f "${GITHUB_WORKSPACE}/findings-stage3.json" ]; then
+            STAGES="${STAGES},stage3"
+          fi
+
+          python -m scripts.post_review \
+            --findings ${FILES} \
             --pr-number ${{ github.event.pull_request.number }} \
             --repo ${{ github.repository }} \
             --commit-sha ${{ github.event.pull_request.head.sha }} \
             --token "${GHES_TOKEN}" \
             --api-url "${API_URL}" \
-            --stages "${{ steps.stages.outputs.list }}" \
-            --output review-result.json
+            --stages "${STAGES}" \
+            --output "${GITHUB_WORKSPACE}/review-result.json"
+        working-directory: .review-bot
