@@ -166,15 +166,18 @@ def parse_tidy_fixes(
     if not text.strip():
         return []
 
+    # Handle multi-document YAML produced by concatenating multiple
+    # clang-tidy --export-fixes outputs (one document per invocation).
+    all_diagnostics: List[Dict[str, Any]] = []
     try:
-        data = yaml.safe_load(text)
+        for doc in yaml.safe_load_all(text):
+            if isinstance(doc, dict):
+                diags = doc.get("Diagnostics") or []
+                all_diagnostics.extend(diags)
     except yaml.YAMLError:
         return []
 
-    if not isinstance(data, dict):
-        return []
-
-    return data.get("Diagnostics", []) or []
+    return all_diagnostics
 
 
 def _join_suggestion(lines: List[str]) -> str:

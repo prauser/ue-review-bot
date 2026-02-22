@@ -167,6 +167,50 @@ class TestParseTidyFixes:
         result = parse_tidy_fixes(str(f))
         assert result == []
 
+    def test_parse_multi_document_yaml(self, tmp_path):
+        """Multi-document YAML from concatenated clang-tidy runs."""
+        diag1 = _make_diag("modernize-use-override", "msg1",
+                           file_path="/project/Source/A.cpp")
+        diag2 = _make_diag("performance-for-range-copy", "msg2",
+                           file_path="/project/Source/B.cpp")
+        doc1 = _make_fixes_yaml([diag1], main_file="/project/Source/A.cpp")
+        doc2 = _make_fixes_yaml([diag2], main_file="/project/Source/B.cpp")
+        combined = doc1 + "---\n" + doc2
+        f = tmp_path / "fixes.yaml"
+        f.write_text(combined)
+        result = parse_tidy_fixes(str(f))
+        assert len(result) == 2
+        names = {d["DiagnosticName"] for d in result}
+        assert names == {"modernize-use-override", "performance-for-range-copy"}
+
+    def test_parse_multi_document_with_empty_doc(self, tmp_path):
+        """Multi-doc where one document has no Diagnostics key."""
+        diag = _make_diag("modernize-use-override", "msg1")
+        doc1 = _make_fixes_yaml([diag])
+        doc2 = "---\nMainSourceFile: /project/Source/B.cpp\n"
+        f = tmp_path / "fixes.yaml"
+        f.write_text(doc1 + doc2)
+        result = parse_tidy_fixes(str(f))
+        assert len(result) == 1
+
+    def test_parse_multi_document_three_files(self, tmp_path):
+        """Three separate clang-tidy runs concatenated."""
+        diags = []
+        docs = []
+        for i, name in enumerate(["modernize-use-override",
+                                   "performance-for-range-copy",
+                                   "clang-analyzer-core.DivideZero"]):
+            d = _make_diag(name, f"msg{i}",
+                           file_path=f"/project/Source/File{i}.cpp")
+            diags.append(d)
+            docs.append(_make_fixes_yaml([d],
+                        main_file=f"/project/Source/File{i}.cpp"))
+        combined = "---\n".join(docs)
+        f = tmp_path / "fixes.yaml"
+        f.write_text(combined)
+        result = parse_tidy_fixes(str(f))
+        assert len(result) == 3
+
 
 # ---------------------------------------------------------------------------
 # convert_diagnostics tests
