@@ -32,6 +32,7 @@ from scripts.post_review import (
     build_summary,
     deduplicate_findings,
     filter_already_posted,
+    filter_findings_by_diff,
     format_comment_body,
     load_findings,
     post_review,
@@ -1002,6 +1003,167 @@ class TestFilterAlreadyPosted:
 
 
 # ---------------------------------------------------------------------------
+# filter_findings_by_diff
+# ---------------------------------------------------------------------------
+
+
+class TestFilterFindingsByDiff:
+
+    SAMPLE_DIFF = (
+        "diff --git a/Source/MyActor.cpp b/Source/MyActor.cpp\n"
+        "index aaa..bbb 100644\n"
+        "--- a/Source/MyActor.cpp\n"
+        "+++ b/Source/MyActor.cpp\n"
+        "@@ -40,6 +40,8 @@ void AMyActor::BeginPlay()\n"
+        "     Super::BeginPlay();\n"
+        " \n"
+        "     // Context line\n"
+        "+    UE_LOG(LogTemp, Warning, TEXT(\"Added line 43\"));\n"
+        "+    UE_LOG(LogTemp, Warning, TEXT(\"Added line 44\"));\n"
+        "     // More context\n"
+        " \n"
+        "     DoSomething();\n"
+        "@@ -100,3 +102,4 @@ void AMyActor::Tick(float DeltaTime)\n"
+        "     Super::Tick(DeltaTime);\n"
+        " \n"
+        "     UpdateStuff();\n"
+        "+    NewTickLogic();\n"
+    )
+
+    def test_finding_inside_hunk_kept(self):
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": 43, "severity": "warning",
+             "rule_id": "logtemp", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 1
+
+    def test_finding_outside_hunk_dropped(self):
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": 80, "severity": "warning",
+             "rule_id": "logtemp", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 0
+
+    def test_finding_in_second_hunk_kept(self):
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": 105, "severity": "error",
+             "rule_id": "some_rule", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 1
+
+    def test_file_not_in_diff_dropped(self):
+        findings = [
+            {"file": "Source/OtherFile.cpp", "line": 10, "severity": "warning",
+             "rule_id": "logtemp", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 0
+
+    def test_mixed_findings_partial_filter(self):
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": 43, "severity": "warning",
+             "rule_id": "logtemp", "message": "in hunk 1"},
+            {"file": "Source/MyActor.cpp", "line": 80, "severity": "error",
+             "rule_id": "gc_safety", "message": "outside hunks"},
+            {"file": "Source/MyActor.cpp", "line": 105, "severity": "warning",
+             "rule_id": "tick", "message": "in hunk 2"},
+            {"file": "Source/Missing.cpp", "line": 1, "severity": "info",
+             "rule_id": "x", "message": "missing file"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 2
+        rules = {r["rule_id"] for r in result}
+        assert rules == {"logtemp", "tick"}
+
+    def test_empty_findings(self):
+        result = filter_findings_by_diff([], self.SAMPLE_DIFF)
+        assert result == []
+
+    def test_empty_diff(self):
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": 10, "severity": "warning",
+             "rule_id": "x", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, "")
+        assert len(result) == 0
+
+    def test_context_line_in_hunk_kept(self):
+        """Findings on context lines (not added, but within hunk range) are kept."""
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": 40, "severity": "warning",
+             "rule_id": "x", "message": "context line at hunk start"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 1
+
+    def test_string_line_number_coerced(self):
+        """String line numbers should be coerced to int."""
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": "43", "severity": "warning",
+             "rule_id": "logtemp", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 1
+
+    def test_null_line_number_dropped(self):
+        """Null/invalid line → line=0 → won't be in any hunk."""
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": None, "severity": "warning",
+             "rule_id": "x", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 0
+
+    def test_multiline_both_in_hunk_kept(self):
+        """Multi-line finding with both line and end_line in same hunk is kept."""
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": 41, "end_line": 44,
+             "severity": "suggestion", "rule_id": "clang_format", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 1
+
+    def test_multiline_end_line_outside_hunk_dropped(self):
+        """Multi-line finding with end_line outside hunk range is dropped."""
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": 43, "end_line": 55,
+             "severity": "suggestion", "rule_id": "clang_format", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 0
+
+    def test_multiline_start_outside_hunk_dropped(self):
+        """Multi-line finding with start line before hunk range is dropped."""
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": 38, "end_line": 43,
+             "severity": "suggestion", "rule_id": "clang_format", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 0
+
+    def test_multiline_spanning_two_hunks_dropped(self):
+        """Multi-line finding spanning across two separate hunks is dropped."""
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": 43, "end_line": 105,
+             "severity": "warning", "rule_id": "x", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 0
+
+    def test_multiline_equal_lines_treated_as_single(self):
+        """end_line == line → treated as single-line, normal hunk check."""
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": 43, "end_line": 43,
+             "severity": "warning", "rule_id": "x", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 1
+
+
+# ---------------------------------------------------------------------------
 # Integration: load + dedup + build comments
 # ---------------------------------------------------------------------------
 
@@ -1352,6 +1514,52 @@ class TestCLIDryRun:
         assert "stage1" in result["summary"]
         assert "stage2" in result["summary"]
         assert "stage3" in result["summary"]
+
+    def test_dry_run_with_diff_filter(self, tmp_path, stage1_findings):
+        """--diff flag should filter findings to diff hunks in dry-run."""
+        findings_path = tmp_path / "findings.json"
+        findings_path.write_text(
+            json.dumps(stage1_findings, ensure_ascii=False), encoding="utf-8"
+        )
+        # Diff that only covers lines 40-43 of Source/MyActor.cpp
+        diff_text = (
+            "diff --git a/Source/MyActor.cpp b/Source/MyActor.cpp\n"
+            "index aaa..bbb 100644\n"
+            "--- a/Source/MyActor.cpp\n"
+            "+++ b/Source/MyActor.cpp\n"
+            "@@ -40,3 +40,4 @@ void AMyActor::BeginPlay()\n"
+            "     Super::BeginPlay();\n"
+            "+    UE_LOG(LogTemp, Warning, TEXT(\"test\"));\n"
+            "     DoSomething();\n"
+        )
+        diff_path = tmp_path / "pr.diff"
+        diff_path.write_text(diff_text, encoding="utf-8")
+        output_path = tmp_path / "result.json"
+
+        from scripts.post_review import main
+
+        with patch(
+            "sys.argv",
+            [
+                "post_review",
+                "--findings",
+                str(findings_path),
+                "--diff",
+                str(diff_path),
+                "--dry-run",
+                "--output",
+                str(output_path),
+            ],
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                main()
+            assert exc_info.value.code == 0
+
+        result = json.loads(output_path.read_text(encoding="utf-8"))
+        # Only line 42 from Source/MyActor.cpp is in the hunk;
+        # line 100 and Source/MyPawn.h are outside / not in diff.
+        assert result["total_findings"] == 1
+        assert result["findings"][0]["rule_id"] == "logtemp"
 
     def test_dry_run_mixed_int_str_line_values(self, tmp_path):
         """Mixed int/str line values must not raise TypeError during sort."""
