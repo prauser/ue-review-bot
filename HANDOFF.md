@@ -1,7 +1,7 @@
 # HANDOFF — UE5 코드리뷰 자동화 시스템 구현 진행상황
 
 > 세션 간 작업 인계를 위한 문서
-> 최종 업데이트: 2026-02-21
+> 최종 업데이트: 2026-02-23
 
 ---
 
@@ -414,9 +414,49 @@ python -m scripts.stage3_llm_reviewer \
 
 ---
 
+## ✅ 워크플로우 PR 리뷰 피드백 수정 (8라운드)
+
+Step 7 완료 후 PR 코드 리뷰에서 발견된 이슈들을 8라운드에 걸쳐 수정했습니다.
+
+**브랜치:** `claude/review-handoff-document-rUUDZ`
+**최종 테스트:** 546 passed
+
+### Round 1: 경로 및 YAML 파싱 (`33d8e77`)
+- **체크리스트 경로 이중 prefix:** `working-directory: .review-bot` + `--checklist .review-bot/configs/...` → `PYTHONPATH` 방식 전환
+- **Artifact 경로 swap:** 패턴 출력과 업로드 경로가 뒤바뀜 → 모든 출력을 `${GITHUB_WORKSPACE}/`로 통일
+- **Multi-document YAML:** clang-tidy 결합 YAML에서 `yaml.safe_load`가 첫 문서만 파싱 → `yaml.safe_load_all`로 변경
+
+### Round 2: clang-tidy 및 워크플로우 문법 (`0ac43a2`)
+- **clang-tidy `-p .` 빌드 경로:** `compile_commands.json`이 `build/`에 있을 때 찾지 못함 → Gate에서 `compile_commands_dir` 출력
+- **`continue-on-error` 위치:** `with:` 블록 안에 배치됨 → step 레벨로 이동
+- **`gh` CLI 의존성:** self-hosted runner에 `gh` 미설치 가능 → `actions/github-script`로 교체
+
+### Round 3: 권한 및 모듈 안전성 (`7cd3a4e`)
+- **`/review` 권한 체크 누락:** 아무나 트리거 가능 → `author_association` (OWNER/MEMBER/COLLABORATOR) 필터
+- **PYTHONPATH 모듈 충돌:** 게임 레포의 `scripts/`와 봇의 `scripts/`가 충돌 → `working-directory: .review-bot` 복원 + `${GITHUB_WORKSPACE}/` 절대경로
+
+### Round 4: diff 및 리액션 (`dbedc19`)
+- **2-dot diff (`..`):** base 브랜치 변경까지 포함됨 → merge-base 3-dot diff (`...`) + `fetch-depth: 0`
+- **Stage 1 실패 시 리액션 누락:** post-review가 skip되면 완료 리액션도 누락 → 별도 `finalizer` job 분리
+
+### Round 5: format checker 경로 (`c28d94c`)
+- **format checker가 소스 파일 못 찾음:** `working-directory: .review-bot`에서 실행 시 게임 레포 파일 접근 불가 → workspace root에서 직접 스크립트 호출
+
+### Round 6: 중복 확인
+- 이미 수정된 코멘트 2건 — 추가 수정 없음
+
+### Round 7: diff hunk 필터 (`59c1ee8`)
+- **clang-tidy 전체 파일 분석 → 422 에러:** diff 밖 라인에 코멘트 시 GitHub API 거부 → `post_review.py`에 `filter_findings_by_diff()` 추가, `--diff` 플래그로 PR diff 전달
+
+### Round 8: multi-line 검증 및 base SHA (`2e0731b`)
+- **end_line 미검증:** multi-line finding의 `end_line`이 diff 밖이면 여전히 422 → line + end_line 모두 같은 hunk 내인지 검증
+- **수동 워크플로우 base SHA 미존재:** `ref: head_sha`로 checkout 시 base 브랜치 tip이 없음 → `git fetch origin base_sha` 추가
+
+---
+
 ## 🎉 전체 완료
 
-**총 7개 Step 모두 완료!** 프로젝트가 운영 가능한 상태입니다.
+**총 7개 Step + 워크플로우 리뷰 피드백 8라운드 완료!** 프로젝트가 운영 가능한 상태입니다.
 
 ---
 
@@ -426,53 +466,47 @@ python -m scripts.stage3_llm_reviewer \
 ue5-review-bot/
 ├── PLAN.md                      # 전체 계획서
 ├── HANDOFF.md                   # 이 파일
-├── README.md                    # ✅ Step 7 프로젝트 설명
-├── configs/                     # ✅ Step 1 + Step 5 완료
-│   ├── .clang-format
-│   ├── .clang-tidy              # ✅ Step 5 clang-tidy 설정
-│   ├── .editorconfig
-│   ├── checklist.yml            # (Step 3에서 regex 버그 수정)
-│   └── gate_config.yml
-├── scripts/                     # ✅ Step 2 + Step 3 + Step 4 + Step 5 + Step 6 완료
+├── README.md                    # 프로젝트 설명 + Quick Start
+├── configs/
+│   ├── .clang-format            # UE5 Epic 코딩 스타일
+│   ├── .clang-tidy              # 9개 체크 설정
+│   ├── .editorconfig            # 에디터 통일 설정
+│   ├── checklist.yml            # 코드리뷰 체크리스트 (Tier 1/2/3)
+│   └── gate_config.yml          # 대규모 PR 판정 설정
+├── scripts/
 │   ├── __init__.py
 │   ├── gate_checker.py          # Gate 로직 (대규모 PR 판정)
-│   ├── stage1_pattern_checker.py # ✅ Stage 1 regex 패턴 검사
-│   ├── stage1_format_diff.py    # ✅ clang-format suggestion 생성
-│   ├── stage2_tidy_to_suggestions.py # ✅ Stage 2 clang-tidy 변환
-│   ├── stage3_llm_reviewer.py   # ✅ Stage 3 LLM 시맨틱 리뷰
-│   ├── post_review.py           # ✅ PR Review 게시 (findings 통합)
+│   ├── stage1_pattern_checker.py # Stage 1 regex 패턴 검사
+│   ├── stage1_format_diff.py    # clang-format suggestion 생성
+│   ├── stage2_tidy_to_suggestions.py # Stage 2 clang-tidy 변환
+│   ├── stage3_llm_reviewer.py   # Stage 3 LLM 시맨틱 리뷰
+│   ├── post_review.py           # PR Review 게시 (findings 통합 + diff 필터)
 │   └── utils/
 │       ├── __init__.py
-│       ├── diff_parser.py       # ✅ unified diff 파싱 유틸
+│       ├── diff_parser.py       # unified diff 파싱 유틸
 │       ├── gh_api.py            # GitHub API 유틸리티
-│       └── token_budget.py      # ✅ 토큰 예산 관리
-├── workflows/                   # ✅ Step 7 완료
+│       └── token_budget.py      # 토큰 예산 관리
+├── workflows/                   # 게임 레포에 복사할 yml 템플릿
 │   ├── code-review.yml          # 자동 트리거 (PR open/sync)
 │   └── code-review-manual.yml   # 수동 트리거 (/review, dispatch)
-├── tests/                       # ✅ Step 2 + Step 3 + Step 4 + Step 5 + Step 6 완료
+├── tests/                       # 546개 테스트
 │   ├── __init__.py
-│   ├── test_gate_checker.py     # Gate Checker 테스트 (50개)
-│   ├── test_pattern_checker.py  # ✅ 패턴 검사 테스트 (71개)
-│   ├── test_format_diff.py      # ✅ 포맷 suggestion 테스트 (21개)
-│   ├── test_stage2.py           # ✅ Stage 2 변환 테스트 (43개)
-│   ├── test_post_review.py      # ✅ PR Review 게시 테스트 (93개)
-│   ├── test_llm_reviewer.py     # ✅ Stage 3 LLM 리뷰 테스트 (81개)
+│   ├── test_gate_checker.py     # 50개
+│   ├── test_pattern_checker.py  # 71개
+│   ├── test_format_diff.py      # 21개
+│   ├── test_stage2.py           # 46개
+│   ├── test_post_review.py      # 109개
+│   ├── test_llm_reviewer.py     # 81개
 │   └── fixtures/
-│       ├── sample_bad.cpp       # 규칙 위반 샘플
-│       ├── sample_good.cpp      # 규칙 준수 샘플 (Step 3에서 수정)
-│       ├── sample_network.cpp   # 네트워크 위반 샘플
-│       └── sample_diff.patch    # 테스트용 diff
+│       ├── sample_bad.cpp
+│       ├── sample_good.cpp
+│       ├── sample_network.cpp
+│       └── sample_diff.patch
 └── docs/
-    ├── SETUP_GUIDE.md           # ✅ Step 7 Runner 설치 가이드
-    ├── CHECKLIST_REFERENCE.md   # ✅ Step 7 체크리스트 레퍼런스
+    ├── SETUP_GUIDE.md           # Runner 설치 가이드
+    ├── CHECKLIST_REFERENCE.md   # 체크리스트 레퍼런스
     └── steps/                   # Step별 상세 스펙
-        ├── STEP1_CONFIGS.md     # ✅ 완료
-        ├── STEP2_GATE.md        # ✅ 완료
-        ├── STEP3_STAGE1.md      # ✅ 완료
-        ├── STEP4_POST_REVIEW.md # ✅ 완료
-        ├── STEP5_STAGE2.md      # ✅ 완료
-        ├── STEP6_STAGE3.md      # ✅ 완료
-        └── STEP7_WORKFLOWS.md   # ✅ 완료
+        ├── STEP1_CONFIGS.md ~ STEP7_WORKFLOWS.md
 ```
 
 ---
@@ -518,40 +552,64 @@ Stage 3 (LLM 리뷰)     → Stage 1 이관 항목 포함, 의미론적 리뷰 �
 
 ---
 
-## 🚀 다음 세션 시작 방법
+## 🚀 배포 방법
 
-1. **레포지토리 상태 확인:**
-   ```bash
-   git fetch origin
-   git status
-   ```
+### 1단계: 봇 레포 준비
 
-2. **다음 Step 스펙 읽기:**
-   ```bash
-   cat docs/steps/STEP7_WORKFLOWS.md     # GitHub Actions 워크플로우
-   ```
+봇 레포(`ue5-review-bot`)를 GHES에 private 레포로 생성하고 이 코드를 push합니다.
 
-3. **새 브랜치 생성:**
-   ```bash
-   git checkout -b claude/review-plan-step<N>-<NEW_SESSION_ID>
-   ```
+### 2단계: 게임 레포에 워크플로우 복사
 
-4. **작업 시작:**
-   - 해당 Step 스펙에 따라 구현
-   - pytest 실행 및 검증
-   - 커밋/푸시
+```bash
+# 게임 레포에서
+cp ue5-review-bot/workflows/code-review.yml .github/workflows/
+cp ue5-review-bot/workflows/code-review-manual.yml .github/workflows/
+```
+
+### 3단계: Secrets 등록 (게임 레포 Settings → Secrets)
+
+| Secret | 용도 | 필수 |
+|--------|------|------|
+| `BOT_REPO_TOKEN` | 봇 레포 read 권한 PAT | 필수 |
+| `GHES_TOKEN` | PR Review 쓰기 권한 PAT | 필수 |
+| `GHES_URL` | `https://github.company.com` | GHES 환경 시 필수 |
+| `ANTHROPIC_API_KEY` | Claude API 키 (Stage 3) | Stage 3 사용 시 필수 |
+
+### 4단계: Self-hosted Runner 도구 설치
+
+```bash
+# 필수
+python3 --version   # 3.9+
+pip install pyyaml
+
+# Stage 1 포맷 검사용 (선택)
+clang-format --version  # 16+
+
+# Stage 2 정적 분석용 (선택)
+clang-tidy --version    # 16+
+# + compile_commands.json 이 프로젝트 루트 또는 build/ 에 존재해야 함
+
+# Stage 3 LLM 리뷰용
+# Runner → api.anthropic.com HTTPS 아웃바운드 필요
+```
+
+### 5단계: 동작 확인
+
+1. **자동:** 게임 레포에서 PR 생성 → Actions 탭에서 "UE5 Code Review" 워크플로우 실행 확인
+2. **수동:** PR 코멘트에 `/review` 입력 → :eyes: 리액션 → 완료 후 :+1: 리액션 확인
 
 ---
 
-## 📝 메모
+## 📝 운영 참고사항
 
-- PDF 파일 (`CodeReviewCheckList.pdf`, `CodingConvention.pdf`)은 main 브랜치의 `docs/` 디렉토리에 보관
-- 현재 환경에서는 PDF 파싱 도구 설치 불가 → STEP1_CONFIGS.md 스펙 기반으로 작성 완료
-- `.clang-tidy` 설정은 Step 5에서 생성 완료 (9개 체크 설정)
+- Stage 2는 `compile_commands.json`이 있을 때만 실행됨 (없으면 자동 skip)
+- Stage 3 (LLM)은 대규모 PR (50파일 초과)에서는 비용/토큰 제한으로 항상 차단
 - `checklist.yml`의 tier 분류가 각 Stage 스크립트 구현의 기준이 됨
 - Stage 1 regex는 주석 라인을 자동 스킵하여 false positive 감소
 - `check_side_effect_suspicious`는 1차 필터 (Stage 3 LLM이 최종 검증)
 - clang-format이 설치되어 있지 않은 환경에서는 format_diff가 빈 결과 반환
+- PR당 LLM 비용 한도: $2 (초과 시 남은 파일 skip)
+- 워크플로우 rerun 시 이미 게시된 코멘트는 자동 중복 방지
 
 ---
 
