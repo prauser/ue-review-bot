@@ -110,6 +110,10 @@ jobs:
           path: .review-bot
           token: ${{ secrets.BOT_REPO_TOKEN }}
 
+      - name: Fetch base branch SHA
+        run: |
+          git fetch origin ${{ needs.preflight.outputs.base_sha }}
+
       - name: Generate PR diff
         run: |
           git diff ${{ needs.preflight.outputs.base_sha }}...${{ needs.preflight.outputs.head_sha }} > pr.diff

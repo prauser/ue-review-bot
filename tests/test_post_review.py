@@ -1117,6 +1117,51 @@ class TestFilterFindingsByDiff:
         result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
         assert len(result) == 0
 
+    def test_multiline_both_in_hunk_kept(self):
+        """Multi-line finding with both line and end_line in same hunk is kept."""
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": 41, "end_line": 44,
+             "severity": "suggestion", "rule_id": "clang_format", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 1
+
+    def test_multiline_end_line_outside_hunk_dropped(self):
+        """Multi-line finding with end_line outside hunk range is dropped."""
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": 43, "end_line": 55,
+             "severity": "suggestion", "rule_id": "clang_format", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 0
+
+    def test_multiline_start_outside_hunk_dropped(self):
+        """Multi-line finding with start line before hunk range is dropped."""
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": 38, "end_line": 43,
+             "severity": "suggestion", "rule_id": "clang_format", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 0
+
+    def test_multiline_spanning_two_hunks_dropped(self):
+        """Multi-line finding spanning across two separate hunks is dropped."""
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": 43, "end_line": 105,
+             "severity": "warning", "rule_id": "x", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 0
+
+    def test_multiline_equal_lines_treated_as_single(self):
+        """end_line == line → treated as single-line, normal hunk check."""
+        findings = [
+            {"file": "Source/MyActor.cpp", "line": 43, "end_line": 43,
+             "severity": "warning", "rule_id": "x", "message": "msg"},
+        ]
+        result = filter_findings_by_diff(findings, self.SAMPLE_DIFF)
+        assert len(result) == 1
+
 
 # ---------------------------------------------------------------------------
 # Integration: load + dedup + build comments

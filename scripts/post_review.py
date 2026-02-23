@@ -171,14 +171,28 @@ def filter_findings_by_diff(
         except (TypeError, ValueError):
             line = 0
 
+        # For multi-line findings, build_review_comments() sends end_line
+        # as the API "line" field.  Both line and end_line must be within
+        # the same hunk, otherwise GitHub still returns 422.
+        try:
+            end_line = int(finding["end_line"]) if finding.get("end_line") is not None else None
+        except (TypeError, ValueError):
+            end_line = None
+
         ranges = hunk_ranges.get(file_path)
         if ranges is None:
             # File not in diff at all — drop finding
             continue
         for start, end in ranges:
-            if start <= line <= end:
-                filtered.append(finding)
-                break
+            if end_line and end_line > line:
+                # Multi-line: both start and end must be in the same hunk
+                if start <= line and end_line <= end:
+                    filtered.append(finding)
+                    break
+            else:
+                if start <= line <= end:
+                    filtered.append(finding)
+                    break
 
     skipped = len(findings) - len(filtered)
     if skipped > 0:
