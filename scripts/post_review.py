@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from scripts.utils.gh_api import GitHubClient
+from scripts.utils.diff_parser import parse_diff
 
 # Maximum number of inline comments per review (GitHub API limit).
 MAX_COMMENTS_PER_REVIEW = 50
@@ -132,6 +133,61 @@ def deduplicate_findings(
                 seen[key] = finding
 
     return list(seen.values())
+
+
+def filter_findings_by_diff(
+    findings: List[Dict[str, Any]],
+    diff_text: str,
+) -> List[Dict[str, Any]]:
+    """Remove findings whose line is outside any diff hunk for the file.
+
+    GitHub Review API rejects inline comments on lines not present in
+    the diff (HTTP 422).  This filter ensures only findings within
+    visible diff hunk ranges are posted.
+
+    Args:
+        findings: List of finding dicts with ``file`` and ``line`` keys.
+        diff_text: Raw unified diff text.
+
+    Returns:
+        Filtered list containing only findings within diff hunks.
+    """
+    diff_data = parse_diff(diff_text)
+
+    # Build a set of (file, line) pairs that are within any hunk.
+    # A hunk's [start, end] covers all new-side lines (added + context).
+    hunk_ranges: Dict[str, List[Tuple[int, int]]] = {}
+    for path, fd in diff_data.items():
+        ranges = []
+        for hunk in fd.hunks:
+            ranges.append((hunk["start"], hunk["end"]))
+        hunk_ranges[path] = ranges
+
+    filtered: List[Dict[str, Any]] = []
+    for finding in findings:
+        file_path = finding.get("file", "")
+        try:
+            line = int(finding.get("line", 0))
+        except (TypeError, ValueError):
+            line = 0
+
+        ranges = hunk_ranges.get(file_path)
+        if ranges is None:
+            # File not in diff at all — drop finding
+            continue
+        for start, end in ranges:
+            if start <= line <= end:
+                filtered.append(finding)
+                break
+
+    skipped = len(findings) - len(filtered)
+    if skipped > 0:
+        print(
+            f"Diff filter: dropped {skipped} finding(s) outside diff hunks",
+            file=sys.stderr,
+        )
+
+    return filtered
 
 
 def _format_suggestion_block(suggestion: str) -> str:
@@ -531,6 +587,11 @@ def main() -> None:
         ),
     )
     parser.add_argument(
+        "--diff",
+        default=None,
+        help="Path to PR unified diff file (filters findings to diff hunks)",
+    )
+    parser.add_argument(
         "--stages",
         default=None,
         help='Comma-separated list of stages that ran (e.g. "stage1,stage2")',
@@ -551,6 +612,19 @@ def main() -> None:
     # Load and process findings
     findings = load_findings(args.findings)
     findings = deduplicate_findings(findings)
+
+    # Filter out findings on lines not in the PR diff (prevents 422 from
+    # the GitHub Review API which only accepts comments on diff hunks).
+    if args.diff:
+        diff_path = Path(args.diff)
+        if diff_path.exists():
+            diff_text = diff_path.read_text(encoding="utf-8", errors="replace")
+            findings = filter_findings_by_diff(findings, diff_text)
+        else:
+            print(
+                f"Warning: Diff file not found, skipping hunk filter: {args.diff}",
+                file=sys.stderr,
+            )
 
     # Sort by file, then line for consistent output.
     # Coerce line to int — Stage 3 may emit string line numbers and

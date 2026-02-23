@@ -360,6 +360,10 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
+          name: pr-diff
+
+      - uses: actions/download-artifact@v4
+        with:
           name: findings-stage1
 
       - uses: actions/download-artifact@v4
@@ -403,6 +407,7 @@ jobs:
             --token "${GHES_TOKEN}" \
             --api-url "${API_URL}" \
             --stages "${STAGES}" \
+            --diff "${GITHUB_WORKSPACE}/pr.diff" \
             --output "${GITHUB_WORKSPACE}/review-result.json"
         working-directory: .review-bot
 
