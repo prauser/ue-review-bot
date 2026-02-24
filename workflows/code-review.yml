@@ -46,10 +46,8 @@ jobs:
           path: .review-bot
           token: ${{ secrets.BOT_REPO_TOKEN }}
 
-      - name: Ensure dependencies
+      - name: Install clang-format
         run: |
-          pip3 install --user pyyaml 2>/dev/null || true
-          which jq || { sudo apt-get update -qq && sudo apt-get install -y -qq jq; } 2>/dev/null || true
           which clang-format || { sudo apt-get update -qq && sudo apt-get install -y -qq clang-format-16; } 2>/dev/null || true
 
       - name: Generate PR diff
@@ -122,9 +120,8 @@ jobs:
           path: .review-bot
           token: ${{ secrets.BOT_REPO_TOKEN }}
 
-      - name: Ensure dependencies
+      - name: Install clang-format
         run: |
-          pip3 install --user pyyaml 2>/dev/null || true
           which clang-format || { sudo apt-get update -qq && sudo apt-get install -y -qq clang-format-16; } 2>/dev/null || true
 
       - uses: actions/download-artifact@v4
@@ -238,10 +235,6 @@ jobs:
           path: .review-bot
           token: ${{ secrets.BOT_REPO_TOKEN }}
 
-      - name: Ensure dependencies
-        run: |
-          pip3 install --user pyyaml 2>/dev/null || true
-
       - uses: actions/download-artifact@v4
         with:
           name: pr-diff
@@ -297,10 +290,6 @@ jobs:
           ref: main
           path: .review-bot
           token: ${{ secrets.BOT_REPO_TOKEN }}
-
-      - name: Ensure dependencies
-        run: |
-          pip3 install --user pyyaml 2>/dev/null || true
 
       - uses: actions/download-artifact@v4
         with:
