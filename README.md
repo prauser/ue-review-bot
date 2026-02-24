@@ -32,9 +32,13 @@ PR open/sync ─┬─▶ Gate ─────▶ Stage 1 (regex 패턴 + clang-
 
 ## Quick Start
 
-### 1. Self-hosted Runner 설정
+### 1. Runner 환경 준비
 
-Runner에 필요한 도구를 설치합니다. 상세 가이드: [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md)
+기존 조직 러너를 사용하거나 새 러너를 등록합니다. 상세 가이드: [docs/SETUP_GUIDE.md](docs/SETUP_GUIDE.md)
+
+**기존 러너 사용 시:** 워크플로우 YAML의 `runs-on` 값을 기존 러너 라벨로 변경하세요.
+
+**Runner에 필요한 도구:**
 
 ```bash
 # 필수
@@ -50,6 +54,8 @@ clang-tidy --version     # 16+
 # Stage 3 (LLM)
 # ANTHROPIC_API_KEY를 Secrets에 등록
 ```
+
+> 도구가 설치되어 있지 않은 경우 워크플로우 내 자동 설치로 해결할 수 있습니다. [SETUP_GUIDE.md](docs/SETUP_GUIDE.md)를 참고하세요.
 
 ### 2. Secrets 등록
 

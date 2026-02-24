@@ -33,7 +33,7 @@
 │                        sync      │                   │
 │                    ┌─────────────▼────────────────┐  │
 │                    │  Self-hosted Runner           │  │
-│                    │  [self-hosted, ue5-review]    │  │
+│                    │  (기존 조직 러너 또는 신규)    │  │
 │                    │                              │  │
 │                    │  Gate → Stage1 → Stage2 →    │  │
 │                    │  Stage3 → Post Review        │  │
@@ -96,9 +96,9 @@ actions-sync sync \
   --repo-name actions/github-script
 ```
 
-### Self-hosted Runner 도구
+### Runner 환경
 
-Runner 머신에 설치 필요한 도구:
+Runner 머신에 필요한 도구입니다. 기존 조직 러너를 사용하는 경우 이미 설치되어 있을 수 있으니, 진단 워크플로우로 먼저 확인하세요 (자세한 내용은 [SETUP_GUIDE.md](SETUP_GUIDE.md) 참조).
 
 ```bash
 # 필수
@@ -112,6 +112,8 @@ clang-format --version  # 16+
 # Stage 2 (선택, compile_commands.json 필요)
 clang-tidy --version    # 16+
 ```
+
+> 도구가 설치되어 있지 않은 경우, 워크플로우에 자동 설치 step을 추가하여 해결할 수 있습니다. 상세 방법은 [SETUP_GUIDE.md](SETUP_GUIDE.md)의 "도구 설치 방법" 섹션을 참고하세요.
 
 ---
 
@@ -159,9 +161,29 @@ GHES의 Settings > Developer settings > Personal access tokens에서 생성합�
 
 > `GHES_URL`은 반드시 **끝에 `/` 없이** 설정하세요. 코드에서 `{GHES_URL}/api/v3`로 조합합니다.
 
-### Step 4: Self-hosted Runner 등록
+### Step 4: Runner 설정
 
-게임 레포 (또는 Organization 레벨)에 Runner를 등록합니다.
+#### 옵션 A: 기존 조직 러너 사용 (권장)
+
+이미 조직에 등록된 Self-hosted Runner가 있다면 별도 등록 없이 사용할 수 있습니다.
+
+1. **기존 러너 라벨 확인**: Settings > Actions > Runners에서 기존 러너의 라벨을 확인합니다 (예: `self-hosted, linux, x64`)
+2. **워크플로우의 `runs-on` 수정**: 게임 레포에 복사한 워크플로우 YAML에서 `runs-on` 값을 기존 러너 라벨로 변경합니다
+
+```yaml
+# 변경 전 (기본값)
+runs-on: [self-hosted, ue5-review]
+
+# 변경 후 — 기존 러너 라벨에 맞춰 수정 (예시)
+runs-on: [self-hosted, linux, x64]
+```
+
+3. **환경 확인**: 진단 워크플로우로 필요 도구 설치 여부를 확인합니다 ([SETUP_GUIDE.md](SETUP_GUIDE.md)의 "기존 러너 환경 확인" 참조)
+4. **도구 미설치 시**: 러너에 직접 설치하거나, 워크플로우에 자동 설치 step을 추가합니다 ([SETUP_GUIDE.md](SETUP_GUIDE.md)의 "도구 설치 방법" 참조)
+
+#### 옵션 B: 새 Runner 등록
+
+전용 러너를 새로 등록하려면, 게임 레포 또는 Organization 레벨에서 Runner를 등록합니다.
 
 ```bash
 # GHES에서 Runner 패키지를 다운로드하고 설정
@@ -171,7 +193,7 @@ GHES의 Settings > Developer settings > Personal access tokens에서 생성합�
   --labels self-hosted,ue5-review
 ```
 
-**라벨 `self-hosted,ue5-review`** 가 반드시 설정되어야 합니다. 워크플로우의 `runs-on: [self-hosted, ue5-review]`와 매칭됩니다.
+새 러너의 경우 라벨 `self-hosted,ue5-review`가 기본 설정됩니다. 워크플로우의 `runs-on: [self-hosted, ue5-review]`와 매칭되므로 YAML 수정이 필요 없습니다.
 
 ### Step 5: 워크플로우 파일 복사
 
@@ -363,8 +385,10 @@ gh auth login --hostname github.company.com
 ### 인프라
 - [ ] GHES에서 Actions가 활성화되어 있는가?
 - [ ] 필요한 GitHub Actions (`checkout`, `upload-artifact`, `download-artifact`, `github-script`)가 GHES에서 접근 가능한가?
-- [ ] Self-hosted Runner가 등록되어 있고 `self-hosted,ue5-review` 라벨이 설정되어 있는가?
-- [ ] Runner가 Online 상태인가?
+- [ ] Self-hosted Runner가 등록되어 있고 Online 상태인가?
+- [ ] 워크플로우의 `runs-on:` 라벨이 사용할 Runner의 라벨과 일치하는가?
+  - 기존 러너: `runs-on` 값을 기존 러너 라벨로 변경했는지 확인
+  - 새 러너: `self-hosted,ue5-review` 라벨이 설정되어 있는지 확인
 
 ### 네트워크
 - [ ] Runner에서 GHES 인스턴스로 HTTPS 통신이 가능한가?
@@ -440,5 +464,6 @@ gh auth login --hostname github.company.com
 ### Runner가 Job을 받지 않음
 
 - Runner가 Online 상태인지 확인 (Settings > Actions > Runners)
-- Runner 라벨이 `self-hosted,ue5-review`로 정확히 설정되어 있는지 확인
-- 워크플로우의 `runs-on:` 값과 Runner 라벨이 일치하는지 확인
+- 워크플로우의 `runs-on:` 라벨과 Runner의 라벨이 일치하는지 확인
+- 기존 조직 러너를 사용하는 경우: `runs-on` 값을 기존 러너 라벨로 변경했는지 확인
+- 새 전용 러너의 경우: `self-hosted,ue5-review` 라벨이 설정되어 있는지 확인

@@ -1,6 +1,11 @@
 # UE5 Code Review Bot — Manual Trigger
 # Triggered via workflow_dispatch or /review comment on a PR
 # Copy this file to your game repo: .github/workflows/code-review-manual.yml
+#
+# [Runner 설정]
+# 기존 조직 러너를 사용하려면 각 job의 runs-on 값을 기존 러너 라벨로 변경하세요.
+# 예: runs-on: [self-hosted, linux, x64]
+# 전용 러너(ue5-review 라벨)를 사용하는 경우 기본값을 그대로 사용합니다.
 
 name: "UE5 Code Review (Manual)"
 
@@ -110,6 +115,12 @@ jobs:
           path: .review-bot
           token: ${{ secrets.BOT_REPO_TOKEN }}
 
+      - name: Ensure dependencies
+        run: |
+          pip3 install --user pyyaml 2>/dev/null || true
+          which jq || { sudo apt-get update -qq && sudo apt-get install -y -qq jq; } 2>/dev/null || true
+          which clang-format || { sudo apt-get update -qq && sudo apt-get install -y -qq clang-format-16; } 2>/dev/null || true
+
       - name: Fetch base branch SHA
         run: |
           git fetch origin ${{ needs.preflight.outputs.base_sha }}
@@ -192,6 +203,11 @@ jobs:
           ref: main
           path: .review-bot
           token: ${{ secrets.BOT_REPO_TOKEN }}
+
+      - name: Ensure dependencies
+        run: |
+          pip3 install --user pyyaml 2>/dev/null || true
+          which clang-format || { sudo apt-get update -qq && sudo apt-get install -y -qq clang-format-16; } 2>/dev/null || true
 
       - uses: actions/download-artifact@v4
         with:
@@ -305,6 +321,10 @@ jobs:
           path: .review-bot
           token: ${{ secrets.BOT_REPO_TOKEN }}
 
+      - name: Ensure dependencies
+        run: |
+          pip3 install --user pyyaml 2>/dev/null || true
+
       - uses: actions/download-artifact@v4
         with:
           name: pr-diff
@@ -361,6 +381,10 @@ jobs:
           ref: main
           path: .review-bot
           token: ${{ secrets.BOT_REPO_TOKEN }}
+
+      - name: Ensure dependencies
+        run: |
+          pip3 install --user pyyaml 2>/dev/null || true
 
       - uses: actions/download-artifact@v4
         with:
