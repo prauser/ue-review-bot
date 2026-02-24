@@ -56,7 +56,12 @@ jobs:
 
       - name: Network — Anthropic API
         run: |
-          curl -s -o /dev/null -w "HTTP %{http_code}" --max-time 5 https://api.anthropic.com/ || echo "⚠️ Cannot reach api.anthropic.com"
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" --max-time 5 https://api.anthropic.com/v1/messages 2>/dev/null)
+          if [ "$HTTP_CODE" = "000" ]; then
+            echo "❌ Cannot reach api.anthropic.com (connection failed)"
+          else
+            echo "✅ api.anthropic.com reachable (HTTP ${HTTP_CODE} — 401/405 is expected without auth)"
+          fi
 
       - name: Disk space
         run: df -h .
