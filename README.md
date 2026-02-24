@@ -146,5 +146,6 @@ ue5-review-bot/
 ## 참조 문서
 
 - [SETUP_GUIDE.md](docs/SETUP_GUIDE.md) — Runner 도구 설치 가이드
+- [GHES_SETUP_GUIDE.md](docs/GHES_SETUP_GUIDE.md) — GitHub Enterprise Server 세팅 가이드
 - [CHECKLIST_REFERENCE.md](docs/CHECKLIST_REFERENCE.md) — 전체 체크리스트 레퍼런스
 - [PLAN.md](PLAN.md) — 전체 프로젝트 계획서
