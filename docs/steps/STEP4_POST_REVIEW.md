@@ -42,7 +42,7 @@ python -m scripts.post_review \
 
 환경변수:
 - `GHES_URL` — GitHub Enterprise Server URL (예: `https://github.company.com`)
-- `GHES_TOKEN` — PR Review 쓰기 권한 PAT
+- `GIT_ACTION_TOKEN` — PR Review 쓰기 권한 PAT
 
 > `GHES_URL`이 없으면 github.com API 사용 (테스트/오픈소스 호환).
 
@@ -231,7 +231,7 @@ def submit_pr_review(
         body: Review 요약 (body)
         comments: Review comment 리스트
         ghes_url: GHES URL (None이면 github.com)
-        token: PAT (None이면 환경변수 GHES_TOKEN)
+        token: PAT (None이면 환경변수 GIT_ACTION_TOKEN)
 
     Returns:
         API 응답 dict (review_id, html_url 등)
@@ -397,7 +397,7 @@ headers = {
 |------|------|
 | 입력 파일 없음 | 빈 배열로 처리, 경고 로그 |
 | 모든 입력 빈 배열 | 빈 Review 게시 (요약만) |
-| GHES_TOKEN 없음 | 에러 종료 (exit 1) |
+| GIT_ACTION_TOKEN 없음 | 에러 종료 (exit 1) |
 | API 호출 실패 (5xx) | 최대 3회 재시도 후 에러 종료 |
 | API 호출 실패 (4xx) | 에러 메시지 출력 후 종료 |
 | multi-line 미지원 | fallback 코드 블록으로 재시도 |

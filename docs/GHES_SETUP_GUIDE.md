@@ -138,13 +138,9 @@ git push ghes main
 
 GHES의 Settings > Developer settings > Personal access tokens에서 생성합니다.
 
-**BOT_REPO_TOKEN** — 봇 레포 읽기용:
-- 권한: `repo` (또는 최소 `read:contents`)
-- 용도: 워크플로우에서 봇 레포를 체크아웃
-
-**GHES_TOKEN** — PR 리뷰 작성용:
-- 권한: `repo` (PR 읽기/쓰기 포함)
-- 용도: PR에 리뷰 코멘트를 게시
+**GIT_ACTION_TOKEN** — 봇 레포 읽기 + PR 리뷰 작성용:
+- 권한: `repo` (봇 레포 읽기 + PR 읽기/쓰기 포함)
+- 용도: 워크플로우에서 봇 레포를 체크아웃하고 PR에 리뷰 코멘트를 게시
 
 > **GHES PAT 유의사항**: GHES에서는 Fine-grained PAT가 버전에 따라 지원되지 않을 수 있습니다. Classic PAT를 사용하는 것이 안전합니다.
 
@@ -154,8 +150,7 @@ GHES의 Settings > Developer settings > Personal access tokens에서 생성합�
 
 | Secret | 값 | 예시 |
 |--------|---|------|
-| `BOT_REPO_TOKEN` | 봇 레포 읽기용 PAT | `ghp_xxxx...` |
-| `GHES_TOKEN` | PR 리뷰 쓰기용 PAT | `ghp_yyyy...` |
+| `GIT_ACTION_TOKEN` | 봇 레포 read + PR 리뷰 쓰기용 PAT | `ghp_xxxx...` |
 | `GHES_URL` | GHES 인스턴스 URL (**슬래시 없이**) | `https://github.company.com` |
 | `ANTHROPIC_API_KEY` | Anthropic API 키 (Stage 3용) | `sk-ant-...` |
 
@@ -304,12 +299,12 @@ export NO_PROXY=github.company.com  # GHES는 프록시 제외 (내부망일 경
     repository: ${{ github.repository_owner }}/ue5-review-bot
     ref: main
     path: .review-bot
-    token: ${{ secrets.BOT_REPO_TOKEN }}
+    token: ${{ secrets.GIT_ACTION_TOKEN }}
 ```
 
 **유의사항:**
 - `repository`는 `owner/repo` 형식이며, 같은 GHES 인스턴스 내의 레포만 가능
-- `BOT_REPO_TOKEN`은 봇 레포에 대한 읽기 권한이 있어야 함
+- `GIT_ACTION_TOKEN`은 봇 레포에 대한 읽기 권한이 있어야 함
 - GHES에서는 `actions/checkout@v4`가 자동으로 GHES의 `GITHUB_SERVER_URL`을 사용하므로 별도 URL 설정 불필요
 - 봇 레포가 다른 Organization에 있으면 `repository:` 값을 직접 변경 (예: `other-org/ue5-review-bot`)
 
@@ -320,11 +315,11 @@ export NO_PROXY=github.company.com  # GHES는 프록시 제외 (내부망일 경
 ```yaml
 - uses: actions/github-script@v7
   with:
-    github-token: ${{ secrets.GHES_TOKEN || secrets.GITHUB_TOKEN }}
+    github-token: ${{ secrets.GIT_ACTION_TOKEN || secrets.GITHUB_TOKEN }}
 ```
 
 - `actions/github-script@v7`은 자동으로 `GITHUB_API_URL` 환경변수(GHES Runner가 자동 설정)를 사용하므로 별도 API URL 설정 불필요
-- `GHES_TOKEN`을 우선 사용하고, 없으면 `GITHUB_TOKEN` fallback
+- `GIT_ACTION_TOKEN`을 우선 사용하고, 없으면 `GITHUB_TOKEN` fallback
 - GHES 3.6 미만에서는 `@v6` 이하를 사용해야 할 수 있음
 
 ### 4.6 `gh` CLI 주의 (현재 미사용이나 참고)
@@ -364,17 +359,17 @@ gh auth login --hostname github.company.com
     path: ...
 ```
 
-### 4.8 `GITHUB_TOKEN` vs `GHES_TOKEN` 권한 차이
+### 4.8 `GITHUB_TOKEN` vs `GIT_ACTION_TOKEN` 권한 차이
 
-| 항목 | `GITHUB_TOKEN` (자동 발급) | `GHES_TOKEN` (PAT) |
+| 항목 | `GITHUB_TOKEN` (자동 발급) | `GIT_ACTION_TOKEN` (PAT) |
 |------|---------------------------|---------------------|
 | 발급 | 워크플로우 실행 시 자동 | 사용자가 직접 생성 |
 | 범위 | 워크플로우가 실행되는 레포만 | PAT 설정에 따라 다름 |
 | 크로스 레포 | 불가 | 가능 |
 | PR 리뷰 작성 | 가능 (같은 레포 PR) | 가능 |
-| 봇 레포 체크아웃 | 불가 (다른 레포) | `BOT_REPO_TOKEN`으로 가능 |
+| 봇 레포 체크아웃 | 불가 (다른 레포) | 가능 |
 
-이 봇은 크로스 레포 체크아웃이 필요하므로 PAT 기반 토큰(`BOT_REPO_TOKEN`, `GHES_TOKEN`)을 사용합니다.
+이 봇은 크로스 레포 체크아웃이 필요하므로 PAT 기반 토큰(`GIT_ACTION_TOKEN`)을 사용합니다.
 
 ---
 
@@ -397,8 +392,7 @@ gh auth login --hostname github.company.com
 - [ ] 프록시 설정이 필요한 경우 `HTTPS_PROXY`, `NO_PROXY`가 설정되어 있는가?
 
 ### Secrets
-- [ ] `BOT_REPO_TOKEN`이 게임 레포 Secrets에 등록되어 있는가?
-- [ ] `GHES_TOKEN`이 게임 레포 Secrets에 등록되어 있는가?
+- [ ] `GIT_ACTION_TOKEN`이 게임 레포 Secrets에 등록되어 있는가?
 - [ ] `GHES_URL`이 게임 레포 Secrets에 등록되어 있는가? (예: `https://github.company.com`)
 - [ ] `ANTHROPIC_API_KEY`가 게임 레포 Secrets에 등록되어 있는가? (Stage 3)
 - [ ] `GHES_URL` 끝에 `/`가 없는가?
@@ -428,7 +422,7 @@ gh auth login --hostname github.company.com
 
 ### "Resource not accessible by integration"
 
-- `GHES_TOKEN` 또는 `BOT_REPO_TOKEN`의 권한이 부족합니다
+- `GIT_ACTION_TOKEN`의 권한이 부족합니다
 - PAT에 `repo` 스코프가 있는지 확인하세요
 - PAT이 만료되지 않았는지 확인하세요
 
@@ -439,7 +433,7 @@ gh auth login --hostname github.company.com
 
 ### "Repository not found" (봇 레포 체크아웃 실패)
 
-- `BOT_REPO_TOKEN`이 봇 레포에 대한 읽기 권한이 있는지 확인
+- `GIT_ACTION_TOKEN`이 봇 레포에 대한 읽기 권한이 있는지 확인
 - 워크플로우의 `repository:` 값이 GHES에 존재하는 레포 경로와 일치하는지 확인
 - 봇 레포와 게임 레포가 같은 GHES 인스턴스에 있는지 확인
 

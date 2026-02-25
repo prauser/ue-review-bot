@@ -218,19 +218,14 @@ api.anthropic.com:443
 
 | Secret | 값 | 필수 |
 |--------|---|------|
-| `BOT_REPO_TOKEN` | 봇 레포 read 권한 PAT | O |
+| `GIT_ACTION_TOKEN` | 봇 레포 read + PR Review 쓰기 권한 PAT | O |
 | `ANTHROPIC_API_KEY` | Anthropic API 키 | Stage 3 사용 시 |
 | `GHES_URL` | GHES 주소 (예: `https://github.company.com`) | GHES 환경 |
-| `GHES_TOKEN` | PR Review 쓰기 권한 PAT | O |
 
 ### PAT (Personal Access Token) 권한
 
-**BOT_REPO_TOKEN:**
-- `repo` (또는 `read:contents`) — 봇 레포 코드 읽기
-
-**GHES_TOKEN:**
-- `repo` — PR 코멘트 작성
-- `write:discussion` (GHES 3.4+) — PR Review 게시
+**GIT_ACTION_TOKEN:**
+- `repo` — 봇 레포 코드 읽기 + PR 코멘트 작성 + PR Review 게시
 
 ---
 

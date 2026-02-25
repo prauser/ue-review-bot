@@ -1643,7 +1643,7 @@ class TestCLIValidation:
         from scripts.post_review import main
 
         env = os.environ.copy()
-        env.pop("GHES_TOKEN", None)
+        env.pop("GIT_ACTION_TOKEN", None)
         env.pop("GITHUB_TOKEN", None)
 
         with patch.dict(os.environ, env, clear=True):

@@ -11,7 +11,7 @@ Usage:
         --repo owner/repo \\
         --commit-sha abc123 \\
         --findings findings-stage1.json suggestions-format.json \\
-        --token $GHES_TOKEN \\
+        --token $GIT_ACTION_TOKEN \\
         --api-url https://github.company.com/api/v3 \\
         --output review-result.json
 
@@ -590,7 +590,7 @@ def main() -> None:
     parser.add_argument(
         "--token",
         default=None,
-        help="GitHub token (default: $GHES_TOKEN or $GITHUB_TOKEN env)",
+        help="GitHub token (default: $GIT_ACTION_TOKEN or $GITHUB_TOKEN env)",
     )
     parser.add_argument(
         "--api-url",
@@ -689,11 +689,11 @@ def main() -> None:
         sys.exit(1)
 
     # Resolve token
-    token = args.token or os.environ.get("GHES_TOKEN") or os.environ.get("GITHUB_TOKEN")
+    token = args.token or os.environ.get("GIT_ACTION_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if not token:
         print(
             "Error: No token provided. Use --token or set "
-            "GHES_TOKEN / GITHUB_TOKEN environment variable.",
+            "GIT_ACTION_TOKEN / GITHUB_TOKEN environment variable.",
             file=sys.stderr,
         )
         sys.exit(1)
