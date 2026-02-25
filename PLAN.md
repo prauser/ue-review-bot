@@ -107,10 +107,9 @@ PR 생성 → yml 트리거 → checkout (게임+봇) → Gate
 
 | Secret | 용도 |
 |--------|------|
-| `BOT_REPO_TOKEN` | 봇 레포 read 권한 PAT |
+| `GIT_ACTION_TOKEN` | 봇 레포 read + PR Review 쓰기 권한 PAT |
 | `ANTHROPIC_API_KEY` | Claude API 키 (Stage 3) |
 | `GHES_URL` | `https://github.company.com` |
-| `GHES_TOKEN` | PR Review 쓰기 권한 PAT |
 
 ## 제약 조건
 
@@ -120,4 +119,4 @@ PR 생성 → yml 트리거 → checkout (게임+봇) → Gate
 4. compile_commands.json 없으면 Stage 2 skip → LLM이 커버
 5. PVS-Studio는 현재 제외 (향후 추가 시 LLM에서 해당 항목 제거)
 6. GHES 3.4+ 확인 시 멀티라인 suggestion 사용, 아니면 fallback
-7. 봇 레포 private이면 `BOT_REPO_TOKEN` 필수
+7. 봇 레포 private이면 `GIT_ACTION_TOKEN` 필수

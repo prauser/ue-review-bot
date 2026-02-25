@@ -11,7 +11,7 @@ name: UE5 Code Review
 
 on:
   pull_request:
-    types: [opened, synchronize]
+    types: [opened, ready_for_review]
 
 permissions:
   contents: read
@@ -27,7 +27,7 @@ jobs:
   # ===========================================================================
   gate:
     name: Gate Check
-    runs-on: [self-hosted, ue5-review]
+    runs-on: [self-hosted, DevOps]
     outputs:
       is_large_pr: ${{ steps.gate.outputs.is_large_pr }}
       reviewable_files: ${{ steps.gate.outputs.reviewable_files }}
@@ -44,7 +44,7 @@ jobs:
           repository: ${{ github.repository_owner }}/ue5-review-bot
           ref: main
           path: .review-bot
-          token: ${{ secrets.BOT_REPO_TOKEN }}
+          token: ${{ secrets.GIT_ACTION_TOKEN }}
 
       - name: Install clang-format
         run: |
@@ -106,7 +106,7 @@ jobs:
   stage1:
     name: "Stage 1: Pattern + Format"
     needs: gate
-    runs-on: [self-hosted, ue5-review]
+    runs-on: [self-hosted, DevOps]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -118,7 +118,7 @@ jobs:
           repository: ${{ github.repository_owner }}/ue5-review-bot
           ref: main
           path: .review-bot
-          token: ${{ secrets.BOT_REPO_TOKEN }}
+          token: ${{ secrets.GIT_ACTION_TOKEN }}
 
       - name: Install clang-format
         run: |
@@ -160,7 +160,7 @@ jobs:
     name: "Stage 2: clang-tidy"
     needs: [gate, stage1]
     if: needs.gate.outputs.is_large_pr == 'false' && needs.gate.outputs.has_compile_commands == 'true'
-    runs-on: [self-hosted, ue5-review]
+    runs-on: [self-hosted, DevOps]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -172,7 +172,7 @@ jobs:
           repository: ${{ github.repository_owner }}/ue5-review-bot
           ref: main
           path: .review-bot
-          token: ${{ secrets.BOT_REPO_TOKEN }}
+          token: ${{ secrets.GIT_ACTION_TOKEN }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -221,7 +221,7 @@ jobs:
     name: "Stage 3: LLM Review"
     needs: [gate, stage1, stage2]
     if: always() && needs.gate.outputs.is_large_pr == 'false' && needs.stage1.result == 'success'
-    runs-on: [self-hosted, ue5-review]
+    runs-on: [self-hosted, DevOps]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -233,7 +233,7 @@ jobs:
           repository: ${{ github.repository_owner }}/ue5-review-bot
           ref: main
           path: .review-bot
-          token: ${{ secrets.BOT_REPO_TOKEN }}
+          token: ${{ secrets.GIT_ACTION_TOKEN }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -277,7 +277,7 @@ jobs:
     name: Post Review
     needs: [gate, stage1, stage2, stage3]
     if: always() && needs.stage1.result == 'success'
-    runs-on: [self-hosted, ue5-review]
+    runs-on: [self-hosted, DevOps]
     steps:
       - uses: actions/checkout@v4
         with:
@@ -289,7 +289,7 @@ jobs:
           repository: ${{ github.repository_owner }}/ue5-review-bot
           ref: main
           path: .review-bot
-          token: ${{ secrets.BOT_REPO_TOKEN }}
+          token: ${{ secrets.GIT_ACTION_TOKEN }}
 
       - uses: actions/download-artifact@v4
         with:
@@ -311,7 +311,7 @@ jobs:
 
       - name: Post PR Review
         env:
-          GHES_TOKEN: ${{ secrets.GHES_TOKEN }}
+          GIT_ACTION_TOKEN: ${{ secrets.GIT_ACTION_TOKEN }}
           GHES_URL: ${{ secrets.GHES_URL }}
         run: |
           API_URL="${GHES_URL:+${GHES_URL}/api/v3}"
@@ -337,7 +337,7 @@ jobs:
             --pr-number ${{ github.event.pull_request.number }} \
             --repo ${{ github.repository }} \
             --commit-sha ${{ github.event.pull_request.head.sha }} \
-            --token "${GHES_TOKEN}" \
+            --token "${GIT_ACTION_TOKEN}" \
             --api-url "${API_URL}" \
             --stages "${STAGES}" \
             --diff "${GITHUB_WORKSPACE}/pr.diff" \

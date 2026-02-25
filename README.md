@@ -63,10 +63,9 @@ clang-tidy --version     # 16+
 
 | Secret | 용도 |
 |--------|------|
-| `BOT_REPO_TOKEN` | 봇 레포 read 권한 PAT |
+| `GIT_ACTION_TOKEN` | 봇 레포 read + PR Review 쓰기 권한 PAT |
 | `ANTHROPIC_API_KEY` | Claude API 키 (Stage 3) |
 | `GHES_URL` | GHES 주소 (예: `https://github.company.com`) |
-| `GHES_TOKEN` | PR Review 쓰기 권한 PAT |
 
 ### 3. Workflow 파일 복사
 

@@ -29,7 +29,7 @@
     repository: your-org/ue5-review-bot
     ref: main
     path: .review-bot
-    token: ${{ secrets.BOT_REPO_TOKEN }}
+    token: ${{ secrets.GIT_ACTION_TOKEN }}
 ```
 
 이후 스크립트는 `.review-bot/scripts/`, 설정은 `.review-bot/configs/` 경로.
@@ -53,10 +53,9 @@ gate → stage1 (항상)
 
 | Secret | 용도 |
 |--------|------|
-| `BOT_REPO_TOKEN` | 봇 레포 read |
+| `GIT_ACTION_TOKEN` | 봇 레포 read + PR Review 쓰기 |
 | `ANTHROPIC_API_KEY` | Stage 3 LLM |
 | `GHES_URL` | GHES 주소 |
-| `GHES_TOKEN` | PR Review 쓰기 |
 
 ---
 

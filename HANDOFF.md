@@ -229,7 +229,7 @@ python -m scripts.post_review \
   --repo owner/repo \
   --commit-sha abc123 \
   --findings findings-stage1.json suggestions-format.json \
-  --token $GHES_TOKEN \
+  --token $GIT_ACTION_TOKEN \
   --api-url https://github.company.com/api/v3 \
   --output review-result.json
 
