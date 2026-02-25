@@ -1,6 +1,11 @@
 # UE5 Code Review Bot — Automatic Trigger
 # Runs on PR open/synchronize against the default branch
 # Copy this file to your game repo: .github/workflows/code-review.yml
+#
+# [Runner 설정]
+# 기존 조직 러너를 사용하려면 아래 RUNNER_LABELS를 기존 러너 라벨로 변경하세요.
+# 예: RUNNER_LABELS: '["self-hosted", "linux", "x64"]'
+# 전용 러너(ue5-review 라벨)를 사용하는 경우 기본값을 그대로 사용합니다.
 
 name: UE5 Code Review
 
@@ -40,6 +45,10 @@ jobs:
           ref: main
           path: .review-bot
           token: ${{ secrets.BOT_REPO_TOKEN }}
+
+      - name: Install clang-format
+        run: |
+          which clang-format || { sudo apt-get update -qq && sudo apt-get install -y -qq clang-format-16; } 2>/dev/null || true
 
       - name: Generate PR diff
         run: |
@@ -110,6 +119,10 @@ jobs:
           ref: main
           path: .review-bot
           token: ${{ secrets.BOT_REPO_TOKEN }}
+
+      - name: Install clang-format
+        run: |
+          which clang-format || { sudo apt-get update -qq && sudo apt-get install -y -qq clang-format-16; } 2>/dev/null || true
 
       - uses: actions/download-artifact@v4
         with:
