@@ -1603,3 +1603,103 @@ class TestChecklistNewRules:
         assert rule["severity"] == "warning"
         assert rule["auto_fixable"] is True
         assert rule["clang_tidy_check"] == "cppcoreguidelines-init-variables"
+
+
+class TestConstRefParamMigration:
+    """Tests for const_ref_param rule migration from Stage 3 (LLM) to Stage 2 (clang-tidy)."""
+
+    CLANG_TIDY_PATH = (
+        Path(__file__).resolve().parent.parent / "configs" / ".clang-tidy"
+    )
+    CHECKLIST_PATH = (
+        Path(__file__).resolve().parent.parent / "configs" / "checklist.yml"
+    )
+
+    def _load_checklist(self):
+        content = self.CHECKLIST_PATH.read_text(encoding="utf-8")
+        return yaml.safe_load(content)
+
+    def _all_items(self):
+        data = self._load_checklist()
+        items = []
+        for category in data.get("categories", []):
+            items.extend(category.get("items", []))
+        return items
+
+    # --- .clang-tidy config tests ---
+
+    def test_clang_tidy_contains_unnecessary_value_param_check(self):
+        """performance-unnecessary-value-param should be present in .clang-tidy Checks."""
+        content = self.CLANG_TIDY_PATH.read_text(encoding="utf-8")
+        assert "performance-unnecessary-value-param" in content
+
+    # --- _CHECK_TO_RULE mapping tests ---
+
+    def test_unnecessary_value_param_in_check_to_rule_dict(self):
+        """_CHECK_TO_RULE should contain the performance-unnecessary-value-param entry."""
+        assert "performance-unnecessary-value-param" in _CHECK_TO_RULE
+        assert _CHECK_TO_RULE["performance-unnecessary-value-param"] == "const_ref_param"
+
+    def test_unnecessary_value_param_maps_to_const_ref_param(self):
+        """Diagnostic from performance-unnecessary-value-param converts to rule_id const_ref_param."""
+        diags = [
+            _make_diag(
+                "performance-unnecessary-value-param",
+                "the parameter 'Name' is copied for each invocation but only used as a const reference; consider making it a const reference",
+                level="Warning",
+            )
+        ]
+        findings = convert_diagnostics(diags)
+        assert len(findings) == 1
+        assert findings[0]["rule_id"] == "const_ref_param"
+
+    def test_unnecessary_value_param_finding_has_correct_severity(self):
+        """Diagnostic from performance-unnecessary-value-param should default to warning severity."""
+        diags = [
+            _make_diag(
+                "performance-unnecessary-value-param",
+                "the parameter 'Mesh' is copied for each invocation but only used as a const reference",
+                level="Warning",
+            )
+        ]
+        findings = convert_diagnostics(diags)
+        assert len(findings) == 1
+        assert findings[0]["severity"] == "warning"
+
+    # --- checklist.yml entry tests ---
+
+    def test_const_ref_param_rule_exists(self):
+        """const_ref_param rule should exist in checklist.yml."""
+        items = self._all_items()
+        ids = [item["id"] for item in items]
+        assert "const_ref_param" in ids
+
+    def test_const_ref_param_rule_is_tier2(self):
+        """const_ref_param rule should be tier 2 (migrated from tier 3)."""
+        items = self._all_items()
+        rule = next((item for item in items if item["id"] == "const_ref_param"), None)
+        assert rule is not None
+        assert rule["tier"] == 2
+
+    def test_const_ref_param_rule_has_clang_tidy_check(self):
+        """const_ref_param rule should have clang_tidy_check set to performance-unnecessary-value-param."""
+        items = self._all_items()
+        rule = next((item for item in items if item["id"] == "const_ref_param"), None)
+        assert rule is not None
+        assert rule.get("clang_tidy_check") == "performance-unnecessary-value-param"
+
+    def test_const_ref_param_rule_has_rationale(self):
+        """const_ref_param rule should have a rationale explaining the migration."""
+        items = self._all_items()
+        rule = next((item for item in items if item["id"] == "const_ref_param"), None)
+        assert rule is not None
+        assert "rationale" in rule
+        assert rule["rationale"]  # non-empty
+
+    def test_const_ref_param_rule_properties(self):
+        """const_ref_param rule should have correct severity and auto_fixable settings."""
+        items = self._all_items()
+        rule = next((item for item in items if item["id"] == "const_ref_param"), None)
+        assert rule is not None
+        assert rule["severity"] == "warning"
+        assert rule["auto_fixable"] is True

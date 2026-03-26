@@ -94,6 +94,7 @@ _CLANG_TIDY_FALLBACK_SECTION = """
 - 불필요한 복사 초기화
 - range-for에서 불필요한 복사
 - else-after-return (Guard Clause 스타일)
+- 객체 파라미터를 값으로 전달 (const&로 변경 필요, 단 int/float/FName 등 trivially copyable 소형 타입 제외)
 """
 
 _SYSTEM_PROMPT_LLM_ITEMS = """

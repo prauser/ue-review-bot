@@ -46,9 +46,11 @@ categories:
       - id: const_ref_param
         summary: "함수 파라미터에 const& 사용"
         description: "Pass-by-value가 필요한 경우를 제외하고 객체 파라미터는 const&로 전달하세요."
-        tier: 3
+        tier: 2
         severity: warning
-        auto_fixable: false
+        auto_fixable: true
+        clang_tidy_check: "performance-unnecessary-value-param"
+        rationale: "clang-tidy가 실제 타입 크기 기반으로 판단하여 소형 타입을 자동 제외함. replacement fix도 생성하므로 auto_fixable."
 
       - id: smart_pointer_usage
         summary: "스마트 포인터 올바른 사용"

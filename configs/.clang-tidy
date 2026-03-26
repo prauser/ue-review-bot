@@ -11,6 +11,7 @@ Checks: >
   bugprone-virtual-near-miss,
   performance-unnecessary-copy-initialization,
   performance-for-range-copy,
+  performance-unnecessary-value-param,
   clang-analyzer-optin.cplusplus.VirtualCall,
   clang-analyzer-core.DivideZero,
   readability-else-after-return,
