@@ -63,6 +63,17 @@ void AMyActor::SyncLoadBad()
 	UObject* Obj2 = StaticLoadObject(UStaticMesh::StaticClass(), nullptr, TEXT("/Game/Meshes/MyMesh2"));
 }
 
+// [unbraced_shipping_macro] 중괄호 없는 if 뒤 check/ensure/UE_LOG
+void AMyActor::UnbracedShippingMacro()
+{
+	if (bCondition)
+		check(Actor != nullptr);
+	for (int32 i = 0; i < Count; ++i)
+		ensure(IsValid(Items[i]));
+	while (bRunning)
+		UE_LOG(LogTemp, Warning, TEXT("Still running"));
+}
+
 // ============================================================================
 // Stage 3 (LLM으로 검출) — 이관 항목
 // ============================================================================

@@ -1504,3 +1504,102 @@ class TestClangTidyConfig:
         ]
         for check in expected_checks:
             assert check in checks, f"Missing check: {check}"
+
+    def test_new_checks_present(self):
+        """New checks added in task-2 should be in the config."""
+        content = self.CLANG_TIDY_PATH.read_text(encoding="utf-8")
+        data = yaml.safe_load(content)
+        checks = data.get("Checks", "")
+        assert "clang-analyzer-core.NullDereference" in checks
+        assert "cppcoreguidelines-init-variables" in checks
+
+
+class TestNewCheckRuleMappings:
+    """Tests for new clang-tidy check → rule_id mappings (task-2)."""
+
+    def test_null_dereference_maps_to_rule_id(self):
+        """Diagnostic from clang-analyzer-core.NullDereference maps to null_dereference."""
+        diags = [
+            _make_diag(
+                "clang-analyzer-core.NullDereference",
+                "Dereference of null pointer (loaded from variable 'ptr')",
+                level="Warning",
+            )
+        ]
+        findings = convert_diagnostics(diags)
+        assert len(findings) == 1
+        assert findings[0]["rule_id"] == "null_dereference"
+
+    def test_init_variables_maps_to_rule_id(self):
+        """Diagnostic from cppcoreguidelines-init-variables maps to uninitialized_variable."""
+        diags = [
+            _make_diag(
+                "cppcoreguidelines-init-variables",
+                "variable 'x' is not initialized",
+                level="Warning",
+            )
+        ]
+        findings = convert_diagnostics(diags)
+        assert len(findings) == 1
+        assert findings[0]["rule_id"] == "uninitialized_variable"
+
+    def test_null_dereference_in_check_to_rule_dict(self):
+        """_CHECK_TO_RULE contains the NullDereference entry."""
+        assert "clang-analyzer-core.NullDereference" in _CHECK_TO_RULE
+        assert _CHECK_TO_RULE["clang-analyzer-core.NullDereference"] == "null_dereference"
+
+    def test_init_variables_in_check_to_rule_dict(self):
+        """_CHECK_TO_RULE contains the init-variables entry."""
+        assert "cppcoreguidelines-init-variables" in _CHECK_TO_RULE
+        assert _CHECK_TO_RULE["cppcoreguidelines-init-variables"] == "uninitialized_variable"
+
+
+class TestChecklistNewRules:
+    """Tests for new rules added in checklist.yml (task-2)."""
+
+    CHECKLIST_PATH = (
+        Path(__file__).resolve().parent.parent / "configs" / "checklist.yml"
+    )
+
+    def _load_checklist(self):
+        content = self.CHECKLIST_PATH.read_text(encoding="utf-8")
+        return yaml.safe_load(content)
+
+    def _all_items(self):
+        data = self._load_checklist()
+        items = []
+        for category in data.get("categories", []):
+            items.extend(category.get("items", []))
+        return items
+
+    def test_null_dereference_rule_exists(self):
+        """null_dereference rule should exist in checklist.yml."""
+        items = self._all_items()
+        ids = [item["id"] for item in items]
+        assert "null_dereference" in ids
+
+    def test_uninitialized_variable_rule_exists(self):
+        """uninitialized_variable rule should exist in checklist.yml."""
+        items = self._all_items()
+        ids = [item["id"] for item in items]
+        assert "uninitialized_variable" in ids
+
+    def test_null_dereference_rule_properties(self):
+        """null_dereference rule should have correct tier, severity, and clang_tidy_check."""
+        items = self._all_items()
+        rule = next((item for item in items if item["id"] == "null_dereference"), None)
+        assert rule is not None
+        assert rule["tier"] == 2
+        assert rule["severity"] == "error"
+        assert rule["auto_fixable"] is False
+        assert rule["clang_tidy_check"] == "clang-analyzer-core.NullDereference"
+
+    def test_uninitialized_variable_rule_properties(self):
+        """uninitialized_variable rule should have correct tier, severity, and clang_tidy_check."""
+        items = self._all_items()
+        rule = next((item for item in items if item["id"] == "uninitialized_variable"), None)
+        assert rule is not None
+        assert rule["tier"] == 2
+        assert rule["severity"] == "warning"
+        assert rule["auto_fixable"] is True
+        assert rule["clang_tidy_check"] == "cppcoreguidelines-init-variables"

@@ -4,7 +4,7 @@
 Parses unified diff text into structured per-file data including
 added lines with new-file line numbers and hunk information.
 
-Output format:
+Output format (to_dict):
     {
         "Source/MyActor.cpp": {
             "path": "Source/MyActor.cpp",
@@ -12,6 +12,10 @@ Output format:
             "hunks": [{"start": 40, "end": 50, "content": "..."}]
         }
     }
+
+Note: FileDiff also stores ``context_lines`` (unchanged lines keyed by
+new-file line number) for internal use by prev_line_pattern matching.
+This field is intentionally excluded from ``to_dict()``.
 """
 
 from __future__ import annotations
@@ -27,6 +31,7 @@ class FileDiff:
 
     path: str
     added_lines: Dict[int, str] = field(default_factory=dict)
+    context_lines: Dict[int, str] = field(default_factory=dict)
     hunks: List[Dict] = field(default_factory=list)
 
     def to_dict(self) -> Dict:
@@ -179,7 +184,9 @@ def parse_diff(diff_text: str) -> Dict[str, FileDiff]:
                 # Removed line — don't increment new-file line counter
                 hunk_lines.append(raw_line)
             elif raw_line.startswith(" "):
-                # Context line
+                # Context line — record content and advance new-file counter
+                content = raw_line[1:]
+                result[current_file].context_lines[line_num] = content
                 hunk_lines.append(raw_line)
                 line_num += 1
             elif raw_line.startswith("\\"):

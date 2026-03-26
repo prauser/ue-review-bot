@@ -53,6 +53,8 @@ _CHECK_TO_RULE: Dict[str, str] = {
     "cppcoreguidelines-virtual-class-destructor": "virtual_destructor",
     "performance-for-range-copy": "unnecessary_copy",
     "performance-unnecessary-copy-initialization": "unnecessary_copy",
+    "clang-analyzer-core.NullDereference": "null_dereference",
+    "cppcoreguidelines-init-variables": "uninitialized_variable",
 }
 
 # Severity mapping: clang-tidy Level → output severity.

@@ -254,8 +254,8 @@ class TestPatternLoading:
     """Tests for loading Tier 1 patterns from checklist.yml."""
 
     def test_load_tier1_patterns(self, patterns):
-        """Should load exactly 7 Tier 1 patterns."""
-        assert len(patterns) == 7
+        """Should load exactly 8 Tier 1 patterns."""
+        assert len(patterns) == 8
 
     def test_pattern_ids(self, patterns):
         """All expected pattern IDs should be present."""
@@ -268,6 +268,7 @@ class TestPatternLoading:
             "declaration_macro_semicolon",
             "check_side_effect_suspicious",
             "sync_load_runtime",
+            "unbraced_shipping_macro",
         }
         assert ids == expected
 
@@ -528,6 +529,286 @@ class TestSyncLoadRuntime:
         assert "sync_load_runtime" not in rule_ids
 
 
+class TestUnbracedShippingMacro:
+    """Tests for unbraced_shipping_macro pattern.
+
+    This is a context-aware rule: the shipping macro line is flagged only when
+    the immediately preceding added line is an unbraced control-flow statement
+    (if/for/while/else if ending without '{').
+    """
+
+    def _make_two_line_diff(
+        self, line1: str, line2: str, *, line1_is_context: bool = False
+    ) -> dict:
+        """Build a minimal parsed diff with two lines.
+
+        Args:
+            line1: First line content.
+            line2: Second line content (always added).
+            line1_is_context: If True, line1 is an unchanged context line;
+                otherwise both lines are added.
+        """
+        if line1_is_context:
+            diff_text = (
+                "diff --git a/Source/Test.cpp b/Source/Test.cpp\n"
+                "index 1234567..abcdef0 100644\n"
+                "--- a/Source/Test.cpp\n"
+                "+++ b/Source/Test.cpp\n"
+                "@@ -1,2 +1,2 @@\n"
+                f" {line1}\n"
+                f"+{line2}\n"
+            )
+        else:
+            diff_text = (
+                "diff --git a/Source/Test.cpp b/Source/Test.cpp\n"
+                "new file mode 100644\n"
+                "--- /dev/null\n"
+                "+++ b/Source/Test.cpp\n"
+                "@@ -0,0 +1,2 @@\n"
+                f"+{line1}\n"
+                f"+{line2}\n"
+            )
+        return parse_diff(diff_text)
+
+    # --- Should detect ---
+
+    def test_detect_if_check(self, patterns):
+        """if (cond) followed by check(...) should be flagged."""
+        diff_data = self._make_two_line_diff(
+            "    if (bCondition)",
+            "        check(Actor != nullptr);",
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" in rule_ids
+
+    def test_detect_for_ensure(self, patterns):
+        """for (...) followed by ensure(...) should be flagged."""
+        diff_data = self._make_two_line_diff(
+            "    for (int32 i = 0; i < Count; ++i)",
+            "        ensure(IsValid(Items[i]));",
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" in rule_ids
+
+    def test_detect_while_ue_log(self, patterns):
+        """while (...) followed by UE_LOG should be flagged."""
+        diff_data = self._make_two_line_diff(
+            "    while (bRunning)",
+            '        UE_LOG(LogTemp, Warning, TEXT("Still running"));',
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" in rule_ids
+
+    def test_detect_else_if_checkf(self, patterns):
+        """else if (...) followed by checkf(...) should be flagged."""
+        diff_data = self._make_two_line_diff(
+            "    else if (bOtherCondition)",
+            "        checkf(Value > 0, TEXT(\"must be positive\"));",
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" in rule_ids
+
+    def test_detect_ensureMsgf(self, patterns):
+        """if (...) followed by ensureMsgf should be flagged."""
+        diff_data = self._make_two_line_diff(
+            "    if (SomeCondition)",
+            "        ensureMsgf(IsValid(Ptr), TEXT(\"Ptr must be valid\"));",
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" in rule_ids
+
+    def test_detect_checkSlow(self, patterns):
+        """if (...) followed by checkSlow should be flagged."""
+        diff_data = self._make_two_line_diff(
+            "    if (bDebugMode)",
+            "        checkSlow(Index >= 0);",
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" in rule_ids
+
+    # --- Should NOT detect (braced) ---
+
+    def test_no_detect_braced_if_check(self, patterns):
+        """if (cond) { ... } with braces should NOT be flagged."""
+        diff_data = self._make_two_line_diff(
+            "    if (bCondition) {",
+            "        check(Actor != nullptr);",
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" not in rule_ids
+
+    def test_no_detect_macro_without_preceding_if(self, patterns):
+        """check() not preceded by a control-flow line should NOT trigger."""
+        diff_data = self._make_two_line_diff(
+            "    SomeFunction();",
+            "    check(Actor != nullptr);",
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" not in rule_ids
+
+    # --- Should NOT detect (verify/verifyf are safe) ---
+
+    def test_no_detect_verify(self, patterns):
+        """verify() is NOT a shipping macro (runs in all builds), should not trigger."""
+        diff_data = self._make_two_line_diff(
+            "    if (bCondition)",
+            "        verify(ProcessItem(Item));",
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" not in rule_ids
+
+    def test_no_detect_verifyf(self, patterns):
+        """verifyf() is NOT a shipping macro, should not trigger."""
+        diff_data = self._make_two_line_diff(
+            "    if (bCondition)",
+            "        verifyf(ProcessItem(Item), TEXT(\"Failed\"));",
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" not in rule_ids
+
+    # --- Comment lines should not trigger ---
+
+    def test_no_detect_comment_line(self, patterns):
+        """Comment lines should not be detected even with preceding if."""
+        diff_data = self._make_two_line_diff(
+            "    if (bCondition)",
+            "        // check(Actor != nullptr);",
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" not in rule_ids
+
+    def test_no_detect_check_only_one_line(self, patterns):
+        """check() on a standalone line (no preceding added if line) should not trigger."""
+        diff_text = (
+            "diff --git a/Source/Test.cpp b/Source/Test.cpp\n"
+            "new file mode 100644\n"
+            "--- /dev/null\n"
+            "+++ b/Source/Test.cpp\n"
+            "@@ -0,0 +1,1 @@\n"
+            "+    check(Actor != nullptr);\n"
+        )
+        diff_data = parse_diff(diff_text)
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" not in rule_ids
+
+    # --- bare else (Critical 1 fix) ---
+
+    def test_detect_bare_else_check(self, patterns):
+        """bare else followed by check(...) should be flagged."""
+        diff_data = self._make_two_line_diff(
+            "    else",
+            "        check(Ptr != nullptr);",
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" in rule_ids
+
+    def test_no_detect_else_braced(self, patterns):
+        """else { ... } with opening brace should NOT be flagged."""
+        diff_data = self._make_two_line_diff(
+            "    else {",
+            "        check(Ptr != nullptr);",
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" not in rule_ids
+
+    # --- context line as prev_line (Critical 2 fix) ---
+
+    def test_detect_context_if_then_added_check(self, patterns):
+        """Unchanged if(...) as context line, newly added check() should be flagged."""
+        diff_data = self._make_two_line_diff(
+            "    if (bCondition)",
+            "        check(Actor != nullptr);",
+            line1_is_context=True,
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" in rule_ids
+
+    def test_detect_context_bare_else_then_added_check(self, patterns):
+        """Unchanged bare else as context line, newly added check() should be flagged."""
+        diff_data = self._make_two_line_diff(
+            "    else",
+            "        check(Ptr != nullptr);",
+            line1_is_context=True,
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" in rule_ids
+
+    def test_no_detect_context_braced_if_then_added_check(self, patterns):
+        """Unchanged if(...) { with brace as context line should NOT trigger."""
+        diff_data = self._make_two_line_diff(
+            "    if (bCondition) {",
+            "        check(Actor != nullptr);",
+            line1_is_context=True,
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" not in rule_ids
+
+    # --- new macro variants (Minor fix) ---
+
+    def test_detect_ensureAlways(self, patterns):
+        """if (...) followed by ensureAlways should be flagged."""
+        diff_data = self._make_two_line_diff(
+            "    if (bCondition)",
+            "        ensureAlways(IsValid(Ptr));",
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" in rule_ids
+
+    def test_detect_checkNoEntry(self, patterns):
+        """else followed by checkNoEntry should be flagged."""
+        diff_data = self._make_two_line_diff(
+            "    else",
+            "        checkNoEntry();",
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" in rule_ids
+
+    def test_detect_checkSlowish(self, patterns):
+        """if (...) followed by checkSlowish should be flagged."""
+        diff_data = self._make_two_line_diff(
+            "    if (bDebugMode)",
+            "        checkSlowish(Index >= 0);",
+        )
+        findings = check_diff(diff_data, patterns)
+        rule_ids = [f["rule_id"] for f in findings]
+        assert "unbraced_shipping_macro" in rule_ids
+
+    # --- Severity should be error ---
+
+    def test_severity_is_error(self, patterns):
+        """unbraced_shipping_macro should have error severity."""
+        diff_data = self._make_two_line_diff(
+            "    if (bCondition)",
+            "        check(Actor != nullptr);",
+        )
+        findings = check_diff(diff_data, patterns)
+        for f in findings:
+            if f["rule_id"] == "unbraced_shipping_macro":
+                assert f["severity"] == "error"
+                break
+        else:
+            pytest.fail("unbraced_shipping_macro finding not found")
+
+
 # ============================================================================
 # Integration tests — sample_bad.cpp
 # ============================================================================
@@ -551,6 +832,7 @@ class TestSampleBadCpp:
             "declaration_macro_semicolon",
             "check_side_effect_suspicious",
             "sync_load_runtime",
+            "unbraced_shipping_macro",
         }
         assert expected_rules.issubset(found_rules), (
             f"Missing detections: {expected_rules - found_rules}"
@@ -633,6 +915,7 @@ class TestSampleGoodCpp:
             "declaration_macro_semicolon",
             "check_side_effect_suspicious",
             "sync_load_runtime",
+            "unbraced_shipping_macro",
         }
         false_positives = [
             f for f in findings if f["rule_id"] in tier1_rules

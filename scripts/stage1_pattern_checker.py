@@ -83,11 +83,22 @@ def load_tier1_patterns(checklist_path: str) -> List[Dict[str, Any]]:
                         f"Invalid regex for pattern '{item['id']}': {e}"
                     ) from e
 
+                # Compile optional prev_line_pattern for context-aware rules
+                prev_compiled = None
+                if "prev_line_pattern" in item:
+                    try:
+                        prev_compiled = re.compile(item["prev_line_pattern"])
+                    except re.error as e:
+                        raise ValueError(
+                            f"Invalid regex for prev_line_pattern '{item['id']}': {e}"
+                        ) from e
+
                 patterns.append(
                     {
                         "id": item["id"],
                         "compiled": compiled,
                         "raw_pattern": item["pattern"],
+                        "prev_compiled": prev_compiled,
                         "severity": item.get("severity", "warning"),
                         "summary": item.get("summary", ""),
                         "description": item.get("description", "").strip(),
@@ -200,6 +211,7 @@ def check_line(
     line: str,
     patterns: List[Dict[str, Any]],
     skip_comments: bool = True,
+    prev_line: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """Check a single line against all Tier 1 patterns.
 
@@ -208,6 +220,8 @@ def check_line(
         patterns: Compiled pattern list from load_tier1_patterns().
         skip_comments: If True, skip lines that are entirely comments
                        and strip inline comments before matching.
+        prev_line: Optional previous source line for context-aware patterns
+                   that use ``prev_line_pattern``.
 
     Returns:
         List of finding dicts (without file/line info).
@@ -220,16 +234,30 @@ def check_line(
 
     findings = []
     for pat in patterns:
-        if pat["compiled"].search(check_target):
-            suggestion = _generate_suggestion(pat["id"], line)
-            findings.append(
-                {
-                    "rule_id": pat["id"],
-                    "severity": pat["severity"],
-                    "message": pat["summary"],
-                    "suggestion": suggestion,
-                }
-            )
+        if not pat["compiled"].search(check_target):
+            continue
+
+        # If this rule requires prev_line context, validate it
+        if pat["prev_compiled"] is not None:
+            if prev_line is None:
+                continue
+            prev_check_target = prev_line
+            if skip_comments:
+                prev_check_target = _strip_comments(prev_line)
+                if not prev_check_target.strip():
+                    continue
+            if not pat["prev_compiled"].search(prev_check_target):
+                continue
+
+        suggestion = _generate_suggestion(pat["id"], line)
+        findings.append(
+            {
+                "rule_id": pat["id"],
+                "severity": pat["severity"],
+                "message": pat["summary"],
+                "suggestion": suggestion,
+            }
+        )
 
     return findings
 
@@ -258,9 +286,22 @@ def check_diff(
         if Path(filepath).suffix.lower() not in _CPP_EXTENSIONS:
             continue
         file_diff = diff_data[filepath]
-        for line_num in sorted(file_diff.added_lines.keys()):
+        sorted_line_nums = sorted(file_diff.added_lines.keys())
+        has_prev_patterns = any(p["prev_compiled"] is not None for p in patterns)
+        for i, line_num in enumerate(sorted_line_nums):
             line = file_diff.added_lines[line_num]
-            findings = check_line(line, patterns, skip_comments=skip_comments)
+            # Only look up prev_line when at least one pattern uses
+            # prev_line_pattern — avoids unnecessary work otherwise.
+            prev_line: Optional[str] = None
+            if has_prev_patterns:
+                prev_line_num = line_num - 1
+                if i > 0 and sorted_line_nums[i - 1] == prev_line_num:
+                    prev_line = file_diff.added_lines[sorted_line_nums[i - 1]]
+                elif prev_line_num in file_diff.context_lines:
+                    prev_line = file_diff.context_lines[prev_line_num]
+            findings = check_line(
+                line, patterns, skip_comments=skip_comments, prev_line=prev_line
+            )
             for finding in findings:
                 all_findings.append(
                     {
